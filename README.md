@@ -137,3 +137,7 @@ Board profiles live in `src/gputui/boards/`. See the gputui docstring in that pa
 ```bash
 uv run pytest     # motherboard + GPU: profiles, views, collectors, bindings, both apps
 ```
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

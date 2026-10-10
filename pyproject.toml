@@ -3,6 +3,8 @@ name = "systui"
 version = "0.1.0"
 description = "Live motherboard- and GPU-PCB terminal views of this machine"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "parag", email = "12007367+PCIHD@users.noreply.github.com" }
 ]
