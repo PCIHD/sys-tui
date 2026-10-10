@@ -1,0 +1,146 @@
+"""Synthetic telemetry shaped like a 6-core AM5 desktop, for ``--demo`` and tests."""
+
+from __future__ import annotations
+
+import math
+import random
+import time
+
+from . import (BoardInfo, CpuStat, Dimm, DiskStat, GpuProc, GpuStat, MemStat, NetStat, PartStat, ProcStat,
+               Psi, PsiLine, Reading, SystemSnapshot, ZramStat)
+
+GiB = 2**30
+
+
+def _wave(t: float, period: float, phase: float = 0.0) -> float:
+    return 0.5 + 0.5 * math.sin(2 * math.pi * t / period + phase)
+
+
+class DemoSource:
+    def __init__(self, board: str = "B650M GAMING PLUS WIFI (MS-7E24)", seed: int = 7) -> None:
+        self.board = board
+        self.rng = random.Random(seed)
+        self.t0 = time.monotonic()
+
+    def collect(self, now: float | None = None) -> SystemSnapshot:
+        now = time.monotonic() if now is None else now
+        t = now - self.t0
+        r = self.rng
+        burst = _wave(t, 37) ** 2
+        s = SystemSnapshot(t=now, source="demo", hostname="demo-box", kernel="6.17.0-demo", uptime_s=86400 + t)
+        s.board = BoardInfo("Micro-Star International Co., Ltd.", self.board, "MS-7E24", "1.E2", "07/02/2026")
+
+        threads, cores = 12, 6
+        per = []
+        for i in range(threads):
+            base = 8 + 80 * burst * _wave(t, 5 + i, i) + (40 if i == 0 else 0) * _wave(t, 9)
+            per.append(max(0.0, min(100.0, base + r.uniform(-4, 4))))
+        c = CpuStat(model="AMD Ryzen 5 9600X 6-Core Processor", threads=threads, cores=cores, per_thread=per,
+                    util=sum(per) / threads, core_of_thread=[i % cores for i in range(threads)])
+        c.mhz = [3000 + 2400 * min(1.0, p / 60) + r.uniform(-40, 40) for p in per]
+        c.prefcore = [200 - i * 8 for i in range(threads)]
+        c.governor, c.epp, c.boost = "powersave", "balance_performance", True
+        c.cstates = [("POLL", 0.01), ("C1", 0.08), ("C2", 0.22), ("C3", 0.69)]
+        c.max_mhz = 5486.0
+        c.core_w = [1.5 + 14 * c.core_util(k) / 100 + r.uniform(-0.3, 0.3) for k in range(cores)]
+        c.package_w = sum(w for w in c.core_w if w) + 22
+        c.tctl = 42 + 0.45 * c.package_w + r.uniform(-0.5, 0.5)
+        c.tccd = [c.tctl - 6]
+        c.load = (c.util / 100 * 12, c.util / 100 * 10, 3.2)
+        c.ctx_rate, c.irq_rate, c.procs, c.power_source = 60000 + 400 * c.util, 30000 + 200 * c.util, 512, "zenergy"
+        s.cpu = c
+
+        total = 64 * GiB
+        used = int(total * (0.42 + 0.25 * _wave(t, 90)))
+        s.mem = MemStat(total=total, available=total - used, used=used, free=int(total * 0.05), buffers=2 * GiB,
+                        cached=int(total - used - total * 0.05 - 2 * GiB), shared=GiB, swap_total=16 * GiB,
+                        swap_used=3 * GiB, swap_in_rate=0.0, swap_out_rate=r.choice([0.0, 0.0, 4096.0]))
+        parts = ["CP16G56C46U5.M8G1", "CP16G56C46U5.M8G1", "CP16G56C46U5.M8D1", "CP16G56C46U5.M8D1"]
+        serials = ["DEMO0000001", "DEMO0000002", "DEMO0000003", "DEMO0000004"]
+        s.mem.dimms = [Dimm(0x50 + k, 40 + 6 * burst + k * 0.4, part=parts[k], serial=serials[k],
+                            speed="5600 CL46", expo=True, maker="Micron", dram_maker="Micron", ranks=1, width=8,
+                            die_gbit=16, timings="46-45-45-90", made="2025 wk10" if k < 2 else "2025 wk35",
+                            temp_max=55.0, temp_crit=85.0, vdd=1.1, vddq=1.1, vpp=1.8,
+                            rail_w=(1.1 * (0.75 + 2.5 * burst), 1.1 * (0.25 + 0.75 * burst), 1.8 * 0.125))
+                       for k in range(4)]
+        s.mem.read_bps, s.mem.write_bps = 3e9 + 4.5e10 * burst, 1.5e9 + 2e10 * burst
+        s.mem.channel_bps = [(s.mem.read_bps / 2, s.mem.write_bps / 2),
+                             (s.mem.read_bps / 2, s.mem.write_bps / 2)]
+        s.mem.peak_bps = 96e9  # DDR5-6000, two channels
+        s.mem.channel_busy = [min(1.0, (rd + wr) / 48e9 * 1.3) for rd, wr in s.mem.channel_bps]
+        s.mem.memclk_mhz = 3000
+        s.mem.zram = [ZramStat("zram0", 16 * GiB, 3 * GiB, 900 * 2**20, 950 * 2**20, "zstd")]
+
+        def disk(name, model, kind, size, rd, wr, temp, pci, link):
+            return DiskStat(name, model, kind, size, rd, wr, rd / 65536, wr / 65536, min(100.0, (rd + wr) / 2e7),
+                            temp, {"Composite": temp} if temp else {}, pci, link=link)
+
+        io = _wave(t, 23) ** 3
+        s.disks = [
+            disk("nvme0n1", "CT1000P3PSSD8", "nvme", 1000 * 10**9, 9e8 * io, 3e8 * _wave(t, 11) ** 4,
+                 44 + 10 * io, ["0000:00:01.2", "0000:02:00.0"], "PCIe 4.0 x4"),
+            disk("nvme1n1", "KIOXIA-EXCERIA G3 SSD", "nvme", 2000 * 10**9, 2e8 * _wave(t, 17) ** 5, 6e8 * burst,
+                 49 + 6 * burst, ["0000:00:02.2", "0000:13:00.0"], "PCIe 4.0 x4"),
+            disk("sda", "ST1000LM035-1RK1", "hdd", 1000 * 10**9, 4e7 * _wave(t, 41) ** 8, 0.0, None,
+                 ["0000:00:02.1", "0000:03:00.0", "0000:04:0d.0", "0000:12:00.0"], "SATA"),
+            disk("zram0", "zram (compressed RAM)", "zram", 16 * GiB, 0.0, 1e5, None, [], ""),
+        ]
+        s.disks[0].serial, s.disks[1].serial = "DEMO-NVME-0001", "DEMO-NVME-0002"
+        s.parts = [PartStat("/dev/nvme0n1p7", "/", "btrfs", 733 * 10**9, 158 * 10**9),
+                   PartStat("/dev/nvme0n1p6", "/boot", "ext4", 10**9, 5 * 10**8),
+                   PartStat("/dev/nvme1n1p1", "/var/mnt/data", "btrfs", 1488 * 10**9, 1200 * 10**9)]
+
+        net = _wave(t, 13) ** 2
+        s.nets = [
+            NetStat("enp6s0", "ethernet", True, 2500, 2.6e7 * net, 1.2e6 * net, 0, 0, "192.168.1.10", temp=44.5,
+                    driver="r8169", pci=["0000:00:02.1", "0000:03:00.0", "0000:04:01.0", "0000:06:00.0"]),
+            NetStat("wlp8s0", "wifi", True, None, 4e5 * _wave(t, 7), 9e4 * _wave(t, 5), 0, 0, "192.168.1.20",
+                    signal_dbm=-55.0, temp=56.0, driver="mt7921e",
+                    pci=["0000:00:02.1", "0000:03:00.0", "0000:04:03.0", "0000:08:00.0"]),
+            NetStat("lo", "loopback", True, None, 4e4, 4e4, 0, 0, "127.0.0.1"),
+        ]
+
+        gu = 100 * _wave(t, 29) ** 2
+        s.gpus = [
+            GpuStat(0, "NVIDIA GeForce RTX 5080", "nvidia", gu, gu * 0.4, 30 + 3.0 * gu, 360.0, 38 + 0.3 * gu,
+                    int(4 * GiB + 10 * GiB * gu / 100), 16 * GiB, 30 + 0.4 * gu, int(800 + 12 * gu), 600 + 23 * gu,
+                    14801, "0000:01:00.0", 4, 16, 4, 16, "demo", pcie_rx_bps=2e5 + 3e10 * (gu / 100) ** 3,
+                    pcie_tx_bps=1e5 + 6e9 * (gu / 100) ** 3, vf_gpc=0, vf_mem=0, vf_gpc_range=(-1000, 1000),
+                    vf_mem_range=(-2000, 6000), pcie_l0_recovery=372, pcie_corr=0, pcie_nak=0,
+                    processes=[GpuProc(1001, "python3", "C", int(8 * GiB * gu / 100))]),
+            GpuStat(100, "AMD Radeon (iGPU)", "amd", 4.0, None, 0.1, None, 54.0, GiB, 2 * GiB, clk_mhz=2200,
+                    pci="0000:14:00.0", driver="amdgpu"),
+        ]
+
+        def rd(chip, key, label, kind, v, unit, hw):
+            return Reading(chip, key, label, kind, v, unit, hw, "")
+
+        fans = [("CPU Fan", 700 + 9 * c.util), ("Pump Fan", 2100 + r.uniform(-20, 20)), ("System Fan #1", 0),
+                ("System Fan #2", 0), ("System Fan #3", 650 + 4 * c.util), ("System Fan #4", 0),
+                ("System Fan #5", 0), ("System Fan #6", 0)]
+        sens = [rd("nct6687", f"fan{i + 1}", lab, "fan", round(v), "rpm", "hwmon2") for i, (lab, v) in enumerate(fans)]
+        volts = [("+12V", 12.1), ("+5V", 5.01), ("CPU Soc", 1.206), ("CPU Vcore", 1.0 + 0.003 * c.util),
+                 ("DRAM", 1.1), ("Chipset", 0.352), ("CPU SA", 0.644)]
+        sens += [rd("nct6687", f"in{i}", lab, "in", v, "V", "hwmon2") for i, (lab, v) in enumerate(volts)]
+        temps = [("CPU", c.tctl - 2), ("System", 48 + 3 * burst), ("VRM MOS", 40 + 0.15 * c.package_w),
+                 ("PCH", 46 + 2 * io), ("CPU Socket", 42 + 2 * burst), ("PCIe x1", 60.0)]
+        sens += [rd("nct6687", f"temp{i + 1}", lab, "temp", v, "°C", "hwmon2") for i, (lab, v) in enumerate(temps)]
+        sens += [rd("k10temp", "temp1", "Tctl", "temp", c.tctl, "°C", "hwmon5"),
+                 rd("k10temp", "temp3", "Tccd1", "temp", c.tccd[0], "°C", "hwmon5")]
+        sens += [rd("spd5118", "temp1", "temp1", "temp", d.temp, "°C", f"hwmon{6 + k}") for k, d in enumerate(s.mem.dimms)]
+        sens += [rd("nvme", "temp1", "Composite", "temp", d.temp, "°C", f"hwmon{k}") for k, d in enumerate(s.disks[:2])]
+        s.sensors = sens
+
+        names = ["firefox", "python3", "gnome-shell", "Xwayland", "pipewire", "code", "kworker/u32:1", "systemd"]
+        s.procs = [ProcStat(1000 + k, n, "demo", max(0.0, 120 * burst / (k + 1) + r.uniform(0, 3)),
+                            int(GiB * 2 / (k + 1)), 3.0 / (k + 1), 10 + k, "running" if k < 2 else "sleeping",
+                            1e6 / (k + 1), cmd=n, last_cpu=k % threads, io_read_bps=0.7e6 / (k + 1),
+                            io_write_bps=0.3e6 / (k + 1)) for k, n in enumerate(names)]
+        s.procs[1].gpu, s.procs[1].gpu_kind, s.procs[1].gpu_vram = True, "C", s.gpus[0].processes[0].vram_bytes
+        s.procs[1].disks = ["nvme0n1"]
+        s.psi = Psi(cpu=PsiLine(0.0, 0.16, 2.22), memory=PsiLine(0.0, 0.51, 1.29, 0.0, 0.51, 1.28),
+                    io=PsiLine(0.87, 1.36, 2.01, 0.70, 1.04, 1.47))
+        return s
+
+    def close(self) -> None:
+        pass

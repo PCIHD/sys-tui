@@ -1,0 +1,223 @@
+id = "nvidia-5080-fe"
+name = "NVIDIA GeForce RTX 5080 Founders Edition (PG144, 3-piece PCB)"
+short = "RTX 5080 Founders Edition"
+skus = ["5080"]
+kind = "fe"
+vendor = 0x10DE
+board_code = "PG144 · 900-1G144-2545-000"
+pcb_mm = [128, 128]
+card_mm = [304, 137]
+fans = 2
+fan_mm = 115
+cooler = "Double flow-through, 2 slots, 2x 115 mm fans with the PCB between them"
+flow_through = true
+mem_part = "Samsung K4VAF325ZC-SC32 (GDDR7, 32 Gbps rated, run at 30 Gbps)"
+gpu_vrm = "15-phase NVVDD — MPS MP29816 controller, MP87993 50 A DrMOS"
+mem_vrm = "3-phase FBVDD — MPS MP2988 controller, MP87993 50 A DrMOS"
+sources = [
+  "https://tpucdn.com/review/nvidia-geforce-rtx-5080-founders-edition/images/front_full.jpg",
+  "https://www.techpowerup.com/review/nvidia-geforce-rtx-5080-founders-edition/6.html",
+  "https://lanoc.org/review/video-cards/nvidia-rtx-5080-founders-edition?start=2",
+]
+notes = ["TPU's photo is rotated; orientation normalised (mezzanine to the PCIe board bottom-left, 12V-2x6 top-right)."]
+fingers = { x0 = 3, x1 = 72.5, physical = 16, electrical = 16, board = "PCIe board" }
+
+[[aux]]
+name = "PCIe board"
+rect = [0, 101, 76, 109]
+role = "pcie"
+
+[[aux]]
+name = "I/O"
+rect = [-26, 18, -14, 90]
+role = "io"
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [34, 38, 63, 76]
+die = [41, 46, 56, 68]
+part = "GB203-400-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [37, 24, 58, 36]
+n = 2
+axis = "x"
+gap = 0.08
+ids = ["M0", "M1"]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [67, 35, 78, 79]
+n = 4
+gap = 0.08
+ids = ["M2", "M3", "M4", "M5"]
+
+[[c]]
+id = "MB"
+kind = "mem"
+rect = [37, 77, 58, 89]
+n = 2
+axis = "x"
+gap = 0.08
+ids = ["M6", "M7"]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [13, 25, 23, 80]
+n = 8
+rail = "NVVDD"
+marking = "LR10"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [6, 25.5, 11, 79.5]
+n = 8
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+
+[[c]]
+id = "TV"
+kind = "choke"
+rect = [38, 12, 58, 22]
+n = 3
+axis = "x"
+rail = "NVVDD"
+marking = "LR10"
+
+[[c]]
+id = "TS"
+kind = "stage"
+rect = [38, 5, 58, 11]
+n = 3
+axis = "x"
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+
+[[c]]
+id = "RV"
+kind = "choke"
+rect = [80, 38, 90, 75]
+n = 5
+rails = ["NVVDD", "NVVDD", "FBVDD", "NVVDD", "NVVDD"]
+markings = ["LR10", "LR10", "LR22", "LR10", "LR10"]
+ids = ["RV1", "RV2", "RV3", "RV4", "RV5"]
+
+[[c]]
+id = "RS"
+kind = "stage"
+rect = [91, 38.5, 97, 74.5]
+n = 5
+rails = ["NVVDD", "NVVDD", "FBVDD", "NVVDD", "NVVDD"]
+part = "MPS MP87993"
+rating = "50 A"
+
+[[c]]
+id = "FV1"
+kind = "choke"
+rect = [71.5, 25.5, 76.5, 30.5]
+rail = "FBVDD"
+marking = "LR22"
+conf = "inferred"
+
+[[c]]
+id = "FV2"
+kind = "choke"
+rect = [72.5, 81.5, 77.5, 86.5]
+rail = "FBVDD"
+marking = "LR22"
+conf = "inferred"
+
+[[c]]
+id = "XV"
+kind = "choke"
+rect = [62.5, 10.5, 67.5, 15.5]
+rail = "MSVDD"
+marking = "LR22"
+conf = "inferred"
+note = "4th LR22 — rail not documented"
+
+[[c]]
+id = "U_GPU"
+kind = "ctrl"
+rect = [16, 4, 20, 9]
+part = "MPS MP29816-A"
+label = "MP29816"
+rail = "NVVDD"
+
+[[c]]
+id = "J21"
+kind = "power"
+rect = [73, 1, 90, 17]
+part = "12V-2x6 (16-pin), angled 45°, recessed"
+rating = "600 W"
+
+[[c]]
+id = "SH5"
+kind = "shunt"
+rect = [61, 6, 70, 9]
+n = 2
+axis = "x"
+part = "R005 current-sense shunt"
+
+[[c]]
+id = "SH2"
+kind = "shunt"
+rect = [62, 18, 70, 22]
+n = 2
+axis = "x"
+part = "R002 current-sense shunt"
+
+[[c]]
+id = "J19"
+kind = "b2b"
+rect = [10, 86, 32, 93]
+label = "J19"
+part = "Board-to-board connector to the PCIe board"
+conf = "inferred"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [-25, 24, -15, 70]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b (UHBR20), on the separate I/O board"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [-25, 74, -15, 86]
+label = "HDMI"
+part = "HDMI 2.1b, on the separate I/O board"
+
+[[c]]
+id = "J25"
+kind = "b2b"
+side = "back"
+rect = [27, 41, 31, 59]
+label = "J25"
+part = "Display flex to the I/O board"
+conf = "inferred"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [42, 48, 55, 66]
+part = "MLCC array behind the GPU"
+
+[[c]]
+id = "B_CAP"
+kind = "cap"
+side = "back"
+rect = [5, 25, 13, 80]
+n = 6
+part = "Polymer tantalum '220'/'470' behind the VRM"

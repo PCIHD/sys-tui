@@ -1,0 +1,193 @@
+id = "ref-5090"
+name = "NVIDIA RTX 5090 reference board (PG145) — Palit GameRock layout"
+short = "RTX 5090 reference (PG145)"
+skus = ["5090", "5090D"]
+kind = "reference"
+board_code = "PG145 SKU30"
+pcb_mm = [205, 125]
+card_mm = [332, 145]
+fans = 3
+fan_mm = 100
+cooler = "Partner triple-fan cooler (Palit GameRock shown); dimensions vary by model"
+mem_part = "Samsung K4VAF325ZC-SC28 (GDDR7, 28 Gbps)"
+gpu_vrm = "~23 NVVDD phases — MPS MP29816, MP87993 50 A DrMOS"
+mem_vrm = "~3+ FBVDD phases (exact split undocumented)"
+sources = [
+  "https://tpucdn.com/review/palit-geforce-rtx-5090-gamerock/images/front_full.jpg",
+  "https://www.techpowerup.com/review/palit-geforce-rtx-5090-gamerock/5.html",
+  "https://wccftech.com/nvidia-geforce-rtx-5090-pcb-leak-gargantuan-gb202-gpu-16-gddr7-memory-single-16-pin-connector/",
+]
+notes = ["Palit/Gainward boards are reportedly ~98 % reference; most non-FE 5090s follow this 4/5/5/2 memory ring."]
+fingers = { x0 = 23, x1 = 62, physical = 16, electrical = 16 }
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [37, 27, 66, 67]
+die = [46, 35, 58, 59]
+part = "GB202-300-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [39, 16, 64, 27]
+n = 4
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1", "M2", "M3"]
+
+[[c]]
+id = "ML"
+kind = "mem"
+rect = [29, 24, 35.5, 70]
+n = 5
+gap = 0.1
+ids = ["M4", "M5", "M6", "M7", "M8"]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [67.5, 24, 74, 71]
+n = 5
+gap = 0.1
+ids = ["M9", "M10", "M11", "M12", "M13"]
+
+[[c]]
+id = "M14"
+kind = "mem"
+rect = [39, 68, 46, 77]
+
+[[c]]
+id = "M15"
+kind = "mem"
+rect = [57, 68, 64, 77]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [18, 10, 23, 80]
+n = 12
+rail = "NVVDD"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [14, 10.5, 17.3, 79.5]
+n = 12
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+conf = "inferred"
+
+[[c]]
+id = "RV"
+kind = "choke"
+rect = [80, 23, 85, 86]
+n = 11
+rail = "NVVDD"
+
+[[c]]
+id = "RS"
+kind = "stage"
+rect = [85.6, 23.5, 88.8, 85.5]
+n = 11
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+conf = "inferred"
+
+[[c]]
+id = "FV"
+kind = "choke"
+rect = [43, 8.5, 63, 13]
+n = 2
+axis = "x"
+gap = 0.7
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "FV3"
+kind = "choke"
+rect = [80, 15, 85, 20]
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "U_GPU"
+kind = "ctrl"
+rect = [4.5, 8.5, 7.5, 12]
+part = "MPS MP29816-A"
+label = "MP29816"
+rail = "NVVDD"
+
+[[c]]
+id = "CAPS"
+kind = "cap"
+rect = [9, 15, 13, 76]
+n = 8
+part = "Polymer aluminium 820 µF 2.5 V"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [86, 2, 95, 11]
+part = "12V-2x6 (16-pin)"
+rating = "600 W"
+
+[[c]]
+id = "SH"
+kind = "shunt"
+rect = [78, 12, 86, 14.5]
+n = 2
+axis = "x"
+part = "R002 current-sense shunt"
+
+[[c]]
+id = "FAN_H"
+kind = "header"
+rect = [43, 2, 55, 6]
+n = 3
+axis = "x"
+gap = 0.15
+ids = ["J_FAN1", "J_FAN2", "J_FAN3"]
+labels = ["FAN", "FAN", "FAN"]
+parts = ["4-pin fan header (black)", "4-pin fan header (black)", "Fan header (white)"]
+
+[[c]]
+id = "J100"
+kind = "header"
+rect = [80, 2, 84, 6]
+label = "J100"
+part = "3-pin header"
+
+[[c]]
+id = "U_RGB"
+kind = "mcu"
+rect = [90.5, 14.5, 93.5, 17.5]
+part = "RGB microcontroller"
+label = "MCU"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 20, 6, 70]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b (UHBR20)"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 74, 6, 85]
+label = "HDMI"
+part = "HDMI 2.1b"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [45, 35, 59, 59]
+part = "MLCC array behind the GPU"
+conf = "inferred"

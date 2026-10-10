@@ -1,0 +1,267 @@
+id = "nvidia-5090-fe"
+name = "NVIDIA GeForce RTX 5090 Founders Edition (PG144A, 3-piece PCB)"
+short = "RTX 5090 Founders Edition"
+skus = ["5090", "5090D"]
+kind = "fe"
+vendor = 0x10DE
+board_code = "PG144A · 900-1G144-2530-000"
+pcb_mm = [128, 128]
+card_mm = [304, 137]
+fans = 2
+fan_mm = 115
+cooler = "Double flow-through, 2 slots, liquid-metal TIM, 2x 115 mm fans with the PCB between them"
+flow_through = true
+mem_part = "Samsung K4VAF325ZC-SC28 (GDDR7, 28 Gbps)"
+gpu_vrm = "~19 NVVDD phases — MPS MP29816 controller, MP87993 50 A DrMOS (sources disagree on the exact split)"
+mem_vrm = "~8 FBVDD phases, MP87993 50 A"
+outline = [[0, 0], [90, 0], [100, 10], [100, 92], [94, 92], [94, 100], [12, 100], [12, 94], [0, 94]]
+sources = [
+  "https://tpucdn.com/review/nvidia-geforce-rtx-5090-founders-edition/images/front_full.jpg",
+  "https://www.techpowerup.com/review/nvidia-geforce-rtx-5090-founders-edition/6.html",
+  "https://www.tomshardware.com/pc-components/gpus/more-geforce-rtx-5090-founders-edition-mysteries-revealed-backside-of-the-pcb",
+]
+notes = ["Main board only carries the 12V-2x6; the PCIe edge and the display outputs live on separate boards (shown dimmed)."]
+fingers = { x0 = 4, x1 = 73.5, physical = 16, electrical = 16, board = "PCIe board" }
+
+[[aux]]
+name = "PCIe board"
+rect = [0, 101, 78, 109]
+role = "pcie"
+
+[[aux]]
+name = "I/O"
+rect = [-26, 18, -14, 90]
+role = "io"
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [19, 26, 70, 70]
+die = [34, 36, 55, 62]
+part = "GB202-300-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [22, 15, 65, 26]
+n = 4
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1", "M2", "M3"]
+
+[[c]]
+id = "ML"
+kind = "mem"
+rect = [5, 22, 15, 76]
+n = 5
+gap = 0.08
+ids = ["M4", "M5", "M6", "M7", "M8"]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [72, 22, 84, 76]
+n = 5
+gap = 0.08
+ids = ["M9", "M10", "M11", "M12", "M13"]
+
+[[c]]
+id = "M14"
+kind = "mem"
+rect = [23, 72, 34, 82]
+
+[[c]]
+id = "M15"
+kind = "mem"
+rect = [54, 72, 66, 82]
+
+[[c]]
+id = "TV"
+kind = "choke"
+rect = [10, 3, 68, 8.5]
+n = 11
+axis = "x"
+rail = "NVVDD"
+marking = "85N"
+
+[[c]]
+id = "TS"
+kind = "stage"
+rect = [10, 9, 68, 13]
+n = 11
+axis = "x"
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+
+[[c]]
+id = "BV"
+kind = "choke"
+rect = [44, 90, 83, 96]
+n = 8
+axis = "x"
+rail = "NVVDD"
+marking = "85N"
+
+[[c]]
+id = "BS"
+kind = "stage"
+rect = [44, 84, 83, 88]
+n = 8
+axis = "x"
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+
+[[c]]
+id = "RA"
+kind = "choke"
+rect = [87, 37, 90.3, 88]
+n = 4
+rail = "FBVDD"
+marking = "85N"
+conf = "inferred"
+note = "Rail split of the right-edge chokes is not documented"
+
+[[c]]
+id = "RB"
+kind = "choke"
+rect = [90.7, 37, 94, 88]
+n = 4
+rail = "FBVDD"
+marking = "85N"
+conf = "inferred"
+
+[[c]]
+id = "RX1"
+kind = "choke"
+rect = [89, 24, 93, 31]
+rail = "MSVDD"
+conf = "inferred"
+
+[[c]]
+id = "RX2"
+kind = "choke"
+rect = [91, 12, 95, 18]
+rail = "MSVDD"
+conf = "inferred"
+
+[[c]]
+id = "RX3"
+kind = "choke"
+rect = [3.5, 78.5, 8.5, 85.5]
+rail = "MSVDD"
+conf = "inferred"
+
+[[c]]
+id = "U_GPU"
+kind = "ctrl"
+rect = [22, 82, 26, 86.5]
+part = "MPS MP29816-A"
+label = "MP29816"
+rail = "NVVDD"
+
+[[c]]
+id = "J1"
+kind = "power"
+rect = [70, 1, 89, 16]
+part = "12V-2x6 (16-pin), angled 45°, recessed"
+rating = "600 W"
+
+[[c]]
+id = "J2"
+kind = "header"
+rect = [65.5, 1.5, 68.5, 5]
+label = "J2"
+part = "2-pin header"
+
+[[c]]
+id = "R_SHUNT"
+kind = "shunt"
+rect = [81, 16.5, 84.5, 19]
+part = "R001 current-sense shunt"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [-25, 24, -15, 70]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b (UHBR20), on the separate I/O board"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [-25, 74, -15, 86]
+label = "HDMI"
+part = "HDMI 2.1b, on the separate I/O board"
+
+[[c]]
+id = "B_TOP"
+kind = "cap"
+side = "back"
+rect = [8, 2, 80, 6]
+n = 14
+axis = "x"
+part = "Polymer tantalum '470'"
+
+[[c]]
+id = "B_TOP2"
+kind = "cap"
+side = "back"
+rect = [15, 7, 70, 12]
+n = 7
+axis = "x"
+part = "Polymer tantalum (large)"
+
+[[c]]
+id = "B_LEFT"
+kind = "cap"
+side = "back"
+rect = [1, 20, 9, 70]
+n = 6
+part = "Polymer tantalum"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [36, 38, 53, 60]
+part = "MLCC field behind the GPU"
+
+[[c]]
+id = "BV_BACK"
+kind = "choke"
+side = "back"
+rect = [37, 29, 53, 35]
+n = 2
+axis = "x"
+rail = "NVVDD"
+note = "Rear-mounted phases directly behind the GPU"
+
+[[c]]
+id = "BV_BACK2"
+kind = "choke"
+side = "back"
+rect = [37, 63, 53, 69]
+n = 2
+axis = "x"
+rail = "NVVDD"
+
+[[c]]
+id = "J806"
+kind = "b2b"
+side = "back"
+rect = [16, 83, 35, 89]
+label = "J806"
+part = "Mezzanine to the PCIe board"
+conf = "inferred"
+
+[[c]]
+id = "J805"
+kind = "b2b"
+side = "back"
+rect = [34, 70, 53, 74]
+label = "J805"
+part = "Flex to the display I/O board"
+conf = "inferred"

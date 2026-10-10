@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Combined TUI as root: DRAM bandwidth + GPU hot spot / per-module GDDR7 (G-zoom).
+# Calls the project venv directly so sudo cannot pick up a leftover gpu-tui VIRTUAL_ENV.
+# Extra arguments pass through: ./systui-root --demo
+set -euo pipefail
+ROOT="$(dirname "$(readlink -f "$0")")"
+PY="$ROOT/.venv/bin/python"
+if [[ ! -x "$PY" ]]; then
+  echo "systui-root: $PY missing — run 'uv sync' in $ROOT first" >&2
+  exit 1
+fi
+cd "$ROOT"
+run() { exec "$PY" -m systui "$@"; }
+if [[ ${EUID} -eq 0 ]]; then
+  run "$@"
+fi
+# Set TERM via env(1) so we don't need sudo --preserve-env (often denied).
+exec sudo env \
+  "TERM=${TERM:-xterm-256color}" \
+  "COLORTERM=${COLORTERM-}" \
+  "LANG=${LANG:-C.UTF-8}" \
+  "$PY" -m systui "$@"

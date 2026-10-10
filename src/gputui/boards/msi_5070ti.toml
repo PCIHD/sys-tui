@@ -1,0 +1,145 @@
+id = "msi-5070ti"
+name = "MSI GeForce RTX 5070 Ti Ventus 3X OC (MS-V531)"
+short = "MSI RTX 5070 Ti Ventus 3X"
+skus = ["5070Ti"]
+kind = "aib"
+vendor = 0x1462
+board_code = "MS-V531 v3.0"
+pcb_mm = [165, 111]
+card_mm = [303, 121]
+fans = 3
+fan_mm = 90
+cooler = "Triple-fan Ventus cooler"
+mem_part = "SK hynix H57G42MP2AX-006 / Samsung K4VAF325ZC-SC28 (GDDR7, 28 Gbps)"
+gpu_vrm = "14-phase NVVDD — MPS MP29816 (on the back), MP87993 50 A DrMOS"
+mem_vrm = "3-phase FBVDD — uPI uP9529Q, uP9646 50 A"
+sources = [
+  "https://tpucdn.com/review/msi-geforce-rtx-5070-ti-ventus-3x/images/front.jpg",
+  "https://www.techpowerup.com/review/msi-geforce-rtx-5070-ti-ventus-3x/5.html",
+]
+notes = ["There is no 5070 Ti Founders Edition; this is the closest documented board for other makers too."]
+fingers = { x0 = 30, x1 = 80, physical = 16, electrical = 16 }
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [49, 26, 70, 67]
+part = "GB203-300-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [51, 11, 66, 23]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1"]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [73, 22, 81, 70]
+n = 4
+gap = 0.1
+ids = ["M2", "M3", "M4", "M5"]
+
+[[c]]
+id = "MB"
+kind = "mem"
+rect = [51, 68, 66, 81]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M6", "M7"]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [26, 21, 33, 85]
+n = 11
+rail = "NVVDD"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [21.5, 21.5, 25.5, 84.5]
+n = 11
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+conf = "inferred"
+
+[[c]]
+id = "TV"
+kind = "choke"
+rect = [34, 13, 44, 20]
+n = 3
+axis = "x"
+rail = "NVVDD"
+
+[[c]]
+id = "FV"
+kind = "choke"
+rect = [86, 24, 95, 65]
+n = 3
+rail = "FBVDD"
+part = "uPI uP9646 (50 A)"
+
+[[c]]
+id = "U_MEM"
+kind = "ctrl"
+rect = [87.5, 68, 91.5, 73]
+part = "uPI uP9529Q"
+label = "uP9529"
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "U_GPU"
+kind = "ctrl"
+side = "back"
+rect = [26, 40, 32, 48]
+part = "MPS MP29816"
+label = "MP29816"
+rail = "NVVDD"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [86, 3, 96, 13]
+part = "12V-2x6 (16-pin)"
+rating = "600 W"
+
+[[c]]
+id = "FANH"
+kind = "header"
+rect = [61, 1.5, 72, 5.5]
+n = 2
+axis = "x"
+ids = ["J_FAN1", "J_FAN2"]
+labels = ["FAN", "FAN"]
+part = "Fan header"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 16, 6.5, 66]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b (UHBR20)"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 70, 6.5, 82]
+label = "HDMI"
+part = "HDMI 2.1b"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [53, 34, 66, 58]
+part = "MLCC array behind the GPU"
+conf = "inferred"

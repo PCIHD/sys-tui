@@ -1,0 +1,116 @@
+id = "zotac-5070"
+name = "ZOTAC GAMING GeForce RTX 5070 Solid (PG147-derived)"
+short = "ZOTAC RTX 5070 Solid"
+skus = ["5070"]
+kind = "aib"
+vendor = 0x19DA
+board_code = "PG147-derived"
+pcb_mm = [190, 108]
+card_mm = [294, 117]
+fans = 3
+fan_mm = 90
+cooler = "Triple-fan Solid cooler"
+mem_part = "Samsung K4VAF325ZC-SC28 (GDDR7, 28 Gbps)"
+gpu_vrm = "9-phase NVVDD"
+mem_vrm = "3-phase FBVDD — AOZ73004CQI controller, AOZ5310NQI 60 A"
+sources = [
+  "https://tpucdn.com/review/zotac-geforce-rtx-5070-solid/images/front.jpg",
+  "https://www.techpowerup.com/review/zotac-geforce-rtx-5070-solid/3.html",
+  "https://hwbusters.com/news/rtx-5060-gb205-cards-are-real-nvidia-is-recycling-rtx-5070-dies/",
+]
+notes = ["The PCB has 8 memory pads (shared with GB203 boards); the 192-bit 5070 leaves the top pair empty."]
+fingers = { x0 = 28, x1 = 75, physical = 16, electrical = 16 }
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [47, 22, 68, 66]
+part = "GB205-300-A1"
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [69, 21, 77, 68]
+n = 4
+gap = 0.1
+ids = ["M0", "M1", "M2", "M3"]
+
+[[c]]
+id = "MB"
+kind = "mem"
+rect = [50, 67, 64, 79]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M4", "M5"]
+
+[[c]]
+id = "PAD"
+kind = "pad"
+rect = [50, 10, 65, 21.5]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["PAD0", "PAD1"]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [28, 11, 34, 80]
+n = 9
+rail = "NVVDD"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [23, 11.5, 27.5, 79.5]
+n = 9
+rail = "NVVDD"
+conf = "inferred"
+
+[[c]]
+id = "FV"
+kind = "choke"
+rect = [80, 25, 86, 60]
+n = 3
+rail = "FBVDD"
+part = "AOZ5310NQI (60 A)"
+
+[[c]]
+id = "U_MEM"
+kind = "ctrl"
+rect = [86, 64, 90, 69]
+part = "AOZ73004CQI"
+label = "AOZ"
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [84, 2, 94, 12]
+part = "12V-2x6 (16-pin)"
+rating = "600 W"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 16, 6.5, 66]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b (UHBR20)"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 70, 6.5, 82]
+label = "HDMI"
+part = "HDMI 2.1b"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [51, 32, 64, 56]
+part = "MLCC array behind the GPU"
+conf = "inferred"

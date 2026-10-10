@@ -1,0 +1,150 @@
+id = "nvidia-5070-fe"
+name = "NVIDIA GeForce RTX 5070 Founders Edition (PG146)"
+short = "RTX 5070 Founders Edition"
+skus = ["5070"]
+kind = "fe"
+vendor = 0x10DE
+board_code = "PG146-A · 900-1G146-2570-000"
+pcb_mm = [150, 89]
+card_mm = [242, 112]
+fans = 2
+fan_mm = 90
+cooler = "2-slot, 2x ~90 mm 7-blade fans, rear fan blows through"
+flow_through = true
+mem_part = "Samsung K4VAF325ZC-SC28 (GDDR7, 28 Gbps)"
+gpu_vrm = "9-phase NVVDD — MPS MP29816, MP87993 50 A DrMOS"
+mem_vrm = "3-phase FBVDD"
+outline = [[0, 0], [100, 0], [100, 30], [72, 47], [100, 65], [100, 100], [0, 100]]
+sources = [
+  "https://tpucdn.com/review/nvidia-geforce-rtx-5070-founders-edition/images/front.jpg",
+  "https://www.techpowerup.com/review/nvidia-geforce-rtx-5070-founders-edition/6.html",
+  "https://lanoc.org/review/video-cards/nvidia-rtx-5070-founders-edition?showall=1",
+]
+notes = ["Display outputs are on the main board; the PCIe edge is a separate board joined through J602 on the back."]
+fingers = { x0 = 38, x1 = 97, physical = 16, electrical = 16, board = "PCIe board" }
+
+[[aux]]
+name = "PCIe board"
+rect = [35, 101, 99, 110]
+role = "pcie"
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [36, 28, 63, 63]
+part = "GB205-300-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [34, 12, 65, 26]
+n = 4
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1", "M2", "M3"]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [64.5, 34, 72, 60]
+n = 2
+gap = 0.1
+ids = ["M4", "M5"]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [21, 17, 29, 80]
+n = 7
+rail = "NVVDD"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [15, 17.5, 20.5, 79.5]
+n = 7
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+
+[[c]]
+id = "BV"
+kind = "choke"
+rect = [36, 67, 46, 80]
+n = 2
+axis = "x"
+rail = "NVVDD"
+
+[[c]]
+id = "FV1"
+kind = "choke"
+rect = [22, 8, 29, 15.5]
+rail = "FBVDD"
+marking = "LR22"
+conf = "inferred"
+
+[[c]]
+id = "FV"
+kind = "choke"
+rect = [67, 14, 79, 21]
+n = 2
+axis = "x"
+rail = "FBVDD"
+marking = "LR22"
+ids = ["FV2", "FV3"]
+conf = "inferred"
+
+[[c]]
+id = "XV"
+kind = "choke"
+rect = [77, 63, 82, 73]
+rail = "MSVDD"
+marking = "LR22"
+conf = "inferred"
+
+[[c]]
+id = "U_GPU"
+kind = "ctrl"
+rect = [9, 4, 13, 9]
+part = "MPS MP29816"
+label = "MP29816"
+rail = "NVVDD"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [80, 3, 92, 18]
+part = "12V-2x6 (16-pin), angled ~45°, recessed"
+rating = "600 W"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 12, 7.5, 64]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b (UHBR20)"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 68, 7.5, 82]
+label = "HDMI"
+part = "HDMI 2.1b"
+
+[[c]]
+id = "J602"
+kind = "b2b"
+side = "back"
+rect = [53, 91, 67, 98]
+label = "J602"
+part = "Board-to-board connector to the PCIe board"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [42, 34, 57, 57]
+part = "MLCC array behind the GPU"
+conf = "inferred"

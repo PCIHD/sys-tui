@@ -1,0 +1,139 @@
+# systui
+
+Two terminal apps in one tree: **systui** draws this machine's motherboard; **gputui** draws the RTX 50-series card in the x16 slot. Both are true-colour half-block pixel art (`▀`, two pixels per cell), animated from live sensors. Click any part to see its data. Each value is tagged ● live, ◐ derived or ○ spec.
+
+systui reads the motherboard model from DMI and draws that board's **actual layout**: the AM5 socket, the VRM, all four DIMM slots, both M.2 slots, the PCIe slots, the chipset, the SATA ports, the rear I/O and every fan header. Graphical dashboards for CPU, memory, storage, network, processes and sensors sit in tabs alongside. Press `G` for the GPU PCB.
+
+![board](docs/board.png)
+
+| Thermal overlay | Per-core tiles (load, clock, watts) |
+|---|---|
+| ![thermal](docs/board-thermal.png) | ![cores](docs/cores.png) |
+
+| DIMMs (SPD-hub temperatures) | Fans at real RPM |
+|---|---|
+| ![dimms](docs/dimms.png) | ![fans](docs/fans.png) |
+
+## Run
+
+```bash
+uv sync
+uv run systui                   # motherboard TUI
+uv run systui --tab cpu         # open on a tab: board cpu mem disk net proc sens
+uv run systui --once            # print the board, overview, cores and all sensors once
+uv run systui --json            # one snapshot as JSON
+uv run systui --demo            # synthetic data, no sensors needed
+uv run systui --png out.png --view board --overlay thermal --size 170x58   # needs Pillow (dev dependency)
+uv run systui --list-boards
+./systui-root                   # sudo: DRAM bandwidth AND GPU hot spot / per-module GDDR7 (G-zoom)
+
+uv run gputui                   # RTX 50 PCB TUI for GPU 0
+uv run gputui --demo 5090       # any SKU, no GPU needed
+uv run gputui --once            # board + every table once
+uv run gputui --png out.png --view die --size 160x48
+./gputui-root                   # GPU-only root; ./systui-root covers this if you stay in the combined app
+```
+
+The best terminal is a true-colour one that is at least about 160×45.
+
+## Keys
+
+| Key | Action |
+|---|---|
+| `1`–`7` | Tabs: Board · CPU · Memory · Storage · Network · Processes · Sensors |
+| mouse / `Tab` / arrows | Select a board part; the side panel shows everything known about it |
+| `h` | Board overlay: live animation → thermal → off |
+| `l` · `c` | Labels on/off · graphics-card footprint on/off |
+| `g` / `G` / Enter on the card | Fly into the GPU. Top tabs become Card · PCB · Back · Die · Cores. Tables underneath. Esc restores Board · CPU · … |
+| `D` / Enter on the CPU | Zoom into the CCD/IOD die. Esc back |
+| `o` | Process sort: CPU → memory → I/O. Click a process to light the parts it is using |
+| `r` · `R` · `[` `]` | Record snapshots · replay · step. `s` writes JSONL if a recording exists |
+| `p` · `+` `-` · `s` | Pause · poll interval · save a JSON snapshot |
+
+`G` finds gputui with `--gputui 'cmd'` or `$SYSTUI_GPUTUI` first, then `gputui` on `PATH`, then `uv run --project` of this checkout.
+
+## What the board shows
+
+| Part | Animation (live overlay) | Thermal overlay | Detail panel |
+|---|---|---|---|
+| CPU (AM5) | The IHS sparkles with utilisation | "Delidded": the CCD with 8 core tiles coloured by per-core load (the 2 fused cores greyed), plus the IOD | Model, clocks, Tctl/Tccd, package and per-core W (zenergy), Vcore/SoC, load |
+| VRM | Power particles run EPS → chokes → socket at a speed set by package W; the chokes glow | Chokes and heatsinks tinted by `VRM MOS` | Vcore, VSOC, VRM temperature, ≈W per phase and ≈Vcore current (derived) |
+| 24-pin ATX | Rail-coloured particles: 12 V (yellow) → x16 slot, 5 V (red) → DIMMs, 3.3 V (orange) → chipset and M.2. Speed follows an **estimate** of each load. The pins glow and `≈ W` is shown under the connector | | Live +12/+5/+3.3 V readings; estimated watts per rail (◐), because nothing measures the 24-pin's draw |
+| DIMMs | Sticks fill with memory used | Each stick tinted by its own SPD-hub temperature | Temperature, SPD address, DRAM voltage |
+| M.2 | The drive blinks cyan for reads and orange for writes; the label shows `▲read ▼write` | NVMe temperature | Model, link (e.g. PCIe 4.0 x4), temps, throughput, IOPS, busy, partitions |
+| PCIe x16 + card | Lanes flicker with GPU load; the card's fans turn at the real fan % | Card tinted by GPU temperature | NVML summary; `G` opens gputui |
+| Chipset | Sparkles with traffic from devices behind it; the uplink carries particles to the CPU | `PCH` temperature | Uplink port, downstream disks/NICs and their rates |
+| SATA, LAN, Wi-Fi | NIC LEDs flash cyan on receive and orange on transmit; data paths to the chipset | | Disk or interface stats, Wi-Fi signal, NIC temperature |
+| Fan headers | A spinner at each header turns at that header's RPM | | RPM, PWM duty, sensor mapping |
+
+**Traffic direction** uses one convention everywhere, in both apps. **▲ cyan** is traffic *towards* the CPU or host: disk reads, network receive, card → host, DRAM reads. **▼ orange** is traffic *away* from it: writes, transmit, host → card. Each data trace on the board has two parallel lanes, inbound and outbound. A key beside the board lists every link's `▲in ▼out` rate when there is room; otherwise just the legend is shown. Mirrored charts (Storage, Network, Overview) put ▲ above the axis and ▼ below. The process I/O column, the detail panels, and gputui's PCIe fingers, die host block and tables use the same arrows and colours.
+
+Each value in the detail panel carries one of three tags: **● live** (read from the system), **◐ derived** (computed from live values or an inferred mapping), **○ spec** (from the board profile or spec sheet).
+
+## Data sources
+
+| Area | Source |
+|---|---|
+| CPU | psutil (per-thread %), `cpufreq/cpuinfo_avg_freq`, `k10temp`/`coretemp`, `zenergy`/`amd_energy` energy counters for package and per-core W, with RAPL powercap as a fallback (usually root-only) |
+| Board | DMI (`/sys/class/dmi/id`), plus Super I/O hwmon (`nct6687`, `nct67xx`, `it87`): fans, PWM, voltages, VRM/PCH/socket temps |
+| Memory | psutil, `/sys/block/zram*`, and `spd5118` (DDR5) or `jc42` (DDR4) per-DIMM temperatures, keyed by SPD i2c address. Read/write bandwidth from the AMD memory-controller perf counters (`amd_umc_*`, CAS commands × 64 B); these need root (`./systui-root`) or `kernel.perf_event_paranoid ≤ 0` |
+| Storage | psutil disk counters, `/sys/block`, NVMe hwmon, the PCIe link from sysfs, SATA port from the `ataN` → controller mapping |
+| Network | psutil, `/proc/net/wireless`, and NIC hwmon (`r8169`, `mt7921`) matched through the device tree |
+| GPU | NVML (`nvidia-ml-py`, optional) and `amdgpu` sysfs for the iGPU; PCIe throughput to and from the card from NVML |
+
+Slow hwmon chips (an NVMe SMART temperature query can take about 40 ms) are re-read every 5th poll. In between, their last values are shown.
+
+## Board profiles
+
+Profiles are TOML files in [`src/systui/boards/`](src/systui/boards). Coordinates are percentages of the PCB in the orientation of the vendor manual's layout figure: rear I/O on the left, 24-pin connector on the right. Every part is flagged `measured` or `inferred`. `bind` ties a part to live data:
+
+```toml
+[[component]]
+id = "M2_1"
+kind = "m2"
+rect = [29.4, 61.6, 65.0, 70.2]
+bind = "nvme:0000:00:01.2"   # the NVMe drive behind this PCIe root port
+```
+
+Bind types: `dimm:0x50`, `nvme:<root port>`, `sata:<port>[,<port>]`, `fan:<label>`, `temp:<label>`, `in:<label>`, `net:ethernet|wifi`, `gpu:x16`.
+
+| Profile | Board | Notes |
+|---|---|---|
+| `msi-b650m-gaming-plus-wifi` | MSI B650M GAMING PLUS WIFI (MS-7E24), mATX 243×243 mm | Measured from the manual's component figure (p.27). VRM chokes, heatsinks and ICs under the I/O cover are inferred. |
+
+Boards without a profile get a **generic** ATX layout built from what the system reports: DIMM count, NVMe drives per root port, fan sensors, Wi-Fi.
+
+### Adding a board
+
+1. Copy the MSI profile and set `match` to a substring of `/sys/class/dmi/id/board_name`.
+2. Measure each `rect = [x0, y0, x1, y1]` as percentages of the PCB from the manual's layout figure.
+3. Use `n` + `axis` (+ `gap`, `ids`, `binds`, `rails`) to write rows of identical parts in one entry.
+4. Run `uv run pytest`. It checks that every part sits on the board and that no parts overlap.
+
+## gputui
+
+The GPU app in this tree. It figures out which RTX 50-series card is in the machine and draws that card's **actual PCB**: the GPU package, every GDDR7 chip, each VRM phase, the 12V-2x6 connector, shunts, fuses, display outputs and PCIe fingers. Live NVML telemetry animates it.
+
+![PCB view](docs/gpu/pcb-zotac-5080.png)
+
+| Card (fans at live RPM) | Die floorplan (fused-off units greyed) | RTX 5090 FE (3-piece PCB) |
+|---|---|---|
+| ![card](docs/gpu/card-zotac-5080.png) | ![die](docs/gpu/die-gb203.png) | ![5090](docs/gpu/pcb-5090-fe.png) |
+
+Keys: `1`–`5` card / PCB front / back / die / cores · mouse/`Tab`/arrows select a part · `h` overlay · `b` board browser · `t`/`0` tables · `p` pause · `s` save JSON.
+
+Board profiles live in `src/gputui/boards/`. See the gputui docstring in that package for the identification order (exact subsystem → vendor family → FE → similar → generic).
+
+## Known limits
+
+- **Slot ↔ device mappings** are inferred and tagged ◐: which root port feeds M2_1 or M2_2, SATA port order, the DIMM slot ↔ SPD address convention, and fan header ↔ sensor order.
+- **DRAM bandwidth needs root, and there is no per-phase VRM current.** Bandwidth is system-wide, not per DIMM. VRM figures are estimates.
+- **No per-slot PCIe counters** on AMD client boards, so M.2, SATA and NIC traffic is the device's own rate and the x1 slots show none. Only the NVIDIA card reports its PCIe throughput.
+- **The die view is schematic.** The CCD/IOD placement under the IHS is approximate. Per-core load and clocks are real.
+- **Footprint, not a model:** the card is drawn as a generic 304 × 61 mm triple-slot outline, since systui doesn't know the card's dimensions. For the real PCB, press `G`.
+
+## Development
+
+```bash
+uv run pytest     # motherboard + GPU: profiles, views, collectors, bindings, both apps
+```

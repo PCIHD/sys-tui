@@ -1,0 +1,229 @@
+id = "zotac-5080"
+name = "ZOTAC GAMING GeForce RTX 5080 (Solid / Solid OC / AMP Extreme Infinity)"
+short = "ZOTAC RTX 5080"
+skus = ["5080"]
+kind = "aib"
+vendor = 0x19DA
+subsystems = []            # 0x1765 seen in the wild but not tied to one model yet
+pcb_mm = [225, 116]
+card_mm = [330, 138]
+fans = 3
+fan_mm = 95
+cooler = "3.5-slot, 3x 95 mm fans (rear fan blows through), vapour chamber, 7x 6 mm heatpipes"
+flow_through = true
+mem_part = "Samsung K4VAF325ZC-SC32 (GDDR7, 32 Gbps rated)"
+gpu_vrm = "14-phase NVVDD — MPS MP29816 controller, MP87993 50 A DrMOS"
+mem_vrm = "3-phase FBVDD — MPS MP2988 controller, MP87993 50 A DrMOS"
+sources = [
+  "https://tpucdn.com/review/zotac-geforce-rtx-5080-amp-extreme/images/front_full.jpg",
+  "https://www.techpowerup.com/review/zotac-geforce-rtx-5080-amp-extreme/5.html",
+  "https://gamersnexus.net/gpus/zotac-rtx-5080-solid-overclocking-thermals-noise-gaming-vs-founders-edition-review",
+]
+notes = [
+  "Positions measured from the AMP Extreme Infinity PCB photo; the Solid / Solid OC reportedly share this Zotac PCB (fuses, dual-BIOS switch, 12V-2x6 seat LED) — unverified.",
+]
+fingers = { x0 = 25, x1 = 64, physical = 16, electrical = 16 }
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [37.5, 38, 53.5, 72]
+part = "GB203-400-A1"
+label = "GB203"
+
+[[c]]
+id = "MTOP"
+kind = "mem"
+rect = [39, 25.5, 51.5, 36.5]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1"]
+
+[[c]]
+id = "MRIGHT"
+kind = "mem"
+rect = [55, 36, 61, 73]
+n = 4
+axis = "y"
+gap = 0.1
+ids = ["M2", "M3", "M4", "M5"]
+
+[[c]]
+id = "MBOT"
+kind = "mem"
+rect = [39, 73.5, 51.5, 84.5]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M6", "M7"]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [21, 11, 26, 78]
+n = 10
+rail = "NVVDD"
+marking = "LR10"
+rating = "50 A (per phase, MP87993)"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [17.3, 11.5, 20.3, 77.5]
+n = 10
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+
+[[c]]
+id = "LC"
+kind = "cap"
+rect = [13.5, 14, 16.8, 74]
+n = 6
+part = "330 µF polymer"
+conf = "measured"
+
+[[c]]
+id = "RV"
+kind = "choke"
+rect = [72.5, 18, 77, 82]
+n = 7
+rails = ["FBVDD", "NVVDD", "NVVDD", "FBVDD", "NVVDD", "NVVDD", "FBVDD"]
+markings = ["R22", "LR10", "LR10", "R22", "LR10", "LR10", "R22"]
+ids = ["RV1", "RV2", "RV3", "RV4", "RV5", "RV6", "RV7"]
+note = "R22 chokes presumed to be the memory (FBVDD) phases"
+
+[[c]]
+id = "RS"
+kind = "stage"
+rect = [77.5, 18.5, 80, 81.5]
+n = 7
+rails = ["FBVDD", "NVVDD", "NVVDD", "FBVDD", "NVVDD", "NVVDD", "FBVDD"]
+part = "MPS MP87993"
+rating = "50 A"
+conf = "inferred"
+
+[[c]]
+id = "U_GPU"
+kind = "ctrl"
+rect = [8.5, 11.5, 12, 16.5]
+part = "MPS MP29816-A"
+label = "MP29816"
+rail = "NVVDD"
+note = "Digital multiphase controller, NVVDD"
+
+[[c]]
+id = "U_MEM"
+kind = "ctrl"
+rect = [80.5, 24, 83, 28]
+part = "MPS MP2988"
+label = "MP2988"
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [86, 2, 95, 15]
+part = "12V-2x6 (16-pin)"
+rating = "600 W"
+note = "Vertical; Zotac adds an LED that warns on a badly seated plug"
+
+[[c]]
+id = "F"
+kind = "fuse"
+rect = [81, 10.5, 85.5, 14]
+n = 2
+axis = "x"
+part = "Zotac 'Z' fuse"
+
+[[c]]
+id = "F3"
+kind = "fuse"
+rect = [95.6, 16, 97.8, 20]
+part = "Zotac 'Z' fuse"
+conf = "inferred"
+
+[[c]]
+id = "CIN"
+kind = "cap"
+rect = [86, 17, 94, 23]
+n = 2
+axis = "x"
+part = "Polymer input bulk caps (12 V)"
+
+[[c]]
+id = "SW1"
+kind = "switch"
+rect = [80.5, 1.5, 83.5, 5.5]
+label = "BIOS"
+part = "Dual-BIOS slide switch"
+
+[[c]]
+id = "J10"
+kind = "header"
+rect = [68, 2, 73, 6]
+label = "J10"
+part = "6-pin (white) — ARGB"
+conf = "inferred"
+
+[[c]]
+id = "J4"
+kind = "header"
+rect = [96, 27, 99, 36]
+label = "J4"
+part = "Header"
+
+[[c]]
+id = "J9"
+kind = "header"
+rect = [86, 81, 89.5, 84.5]
+label = "FAN"
+part = "4-pin fan header (black)"
+
+[[c]]
+id = "J8"
+kind = "header"
+rect = [90.5, 81, 94, 84.5]
+label = "FAN"
+part = "Fan header (white)"
+
+[[c]]
+id = "U_MCU"
+kind = "mcu"
+rect = [85.5, 55.5, 88.5, 60.5]
+part = "essemi ES32 MCU (RGB / fan logic)"
+label = "ES32"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 28, 6.5, 70]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b (UHBR20)"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 76, 6.5, 85]
+label = "HDMI"
+part = "HDMI 2.1b"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [41, 45, 50, 65]
+part = "MLCC decoupling array behind the GPU"
+conf = "inferred"
+
+[[c]]
+id = "B_CAP"
+kind = "cap"
+side = "back"
+rect = [17, 12, 26, 77]
+n = 6
+part = "Polymer caps behind the NVVDD column"
+conf = "inferred"

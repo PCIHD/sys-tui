@@ -1,0 +1,98 @@
+id = "zotac-5060"
+name = "ZOTAC GAMING GeForce RTX 5060 Solo 8 GB (PG152)"
+short = "ZOTAC RTX 5060 Solo"
+skus = ["5060"]
+kind = "aib"
+vendor = 0x19DA
+board_code = "PG152"
+pcb_mm = [145, 105]
+card_mm = [163, 115]
+fans = 1
+fan_mm = 100
+cooler = "Single-fan compact cooler"
+mem_part = "Samsung GDDR7, 28 Gbps (2 GB)"
+gpu_vrm = "~4-phase NVVDD"
+mem_vrm = "2-phase FBVDD — uPI uP9529Q, uP9646"
+sources = [
+  "https://tpucdn.com/review/zotac-geforce-rtx-5060-solo-8-gb/images/front.jpg",
+]
+fingers = { x0 = 20, x1 = 79, physical = 16, electrical = 8 }
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [45, 34, 66, 63]
+part = "GB206-250-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [46, 18, 65, 31]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1"]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [68, 37, 78, 63]
+n = 2
+gap = 0.1
+ids = ["M2", "M3"]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [31, 25, 37, 75]
+n = 4
+rail = "NVVDD"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [26, 25.5, 30.5, 74.5]
+n = 4
+rail = "NVVDD"
+conf = "inferred"
+
+[[c]]
+id = "FV"
+kind = "choke"
+rect = [70, 68, 80, 77]
+n = 2
+axis = "x"
+rail = "FBVDD"
+part = "uPI uP9646"
+conf = "inferred"
+
+[[c]]
+id = "U_MEM"
+kind = "ctrl"
+rect = [82, 70, 86, 75]
+part = "uPI uP9529Q"
+label = "uP9529"
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [81, 2, 93, 13]
+part = "PCIe 8-pin"
+rating = "150 W"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 14, 7, 66]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 70, 7, 83]
+label = "HDMI"
+part = "HDMI 2.1b"

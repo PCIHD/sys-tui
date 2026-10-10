@@ -1,0 +1,133 @@
+id = "zotac-5060ti-16"
+name = "ZOTAC GAMING GeForce RTX 5060 Ti AMP 16 GB (PG152)"
+short = "ZOTAC RTX 5060 Ti AMP 16 GB"
+skus = ["5060Ti"]
+kind = "aib"
+vendor = 0x19DA
+board_code = "PG152"
+pcb_mm = [145, 105]
+card_mm = [221, 117]
+fans = 2
+fan_mm = 90
+cooler = "Dual-fan cooler"
+mem_part = "Samsung K4VAF325ZC-SC28 (GDDR7, 28 Gbps)"
+gpu_vrm = "~5-phase NVVDD"
+mem_vrm = "2-phase FBVDD"
+sources = [
+  "https://tpucdn.com/review/zotac-geforce-rtx-5060-ti-amp-16-gb/images/front.jpg",
+  "https://tpucdn.com/review/zotac-geforce-rtx-5060-ti-amp-16-gb/images/back.jpg",
+  "https://www.techpowerup.com/review/zotac-geforce-rtx-5060-ti-amp-16-gb/5.html",
+]
+notes = ["16 GB = clamshell: 4 chips on the back sit directly behind the 4 on the front, pairing up on each 32-bit controller."]
+fingers = { x0 = 20, x1 = 79, physical = 16, electrical = 8 }
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [45, 33, 66, 63]
+part = "GB206-300-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [46, 18, 65, 31]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1"]
+channels = [0, 1]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [68, 37, 78, 63]
+n = 2
+gap = 0.1
+ids = ["M2", "M3"]
+channels = [2, 3]
+
+[[c]]
+id = "BMT"
+kind = "mem"
+side = "back"
+rect = [46, 18, 65, 31]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M4", "M5"]
+channels = [0, 1]
+labels = ["M4", "M5"]
+note = "Clamshell partner of the chip on the front"
+
+[[c]]
+id = "BMR"
+kind = "mem"
+side = "back"
+rect = [68, 37, 78, 63]
+n = 2
+gap = 0.1
+ids = ["M6", "M7"]
+channels = [2, 3]
+labels = ["M6", "M7"]
+note = "Clamshell partner of the chip on the front"
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [30, 27, 37, 76]
+n = 5
+rail = "NVVDD"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [25, 27.5, 29.5, 75.5]
+n = 5
+rail = "NVVDD"
+conf = "inferred"
+
+[[c]]
+id = "FV"
+kind = "choke"
+rect = [68, 69, 80, 78]
+n = 2
+axis = "x"
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [81, 2, 93, 13]
+part = "PCIe 8-pin"
+rating = "150 W"
+
+[[c]]
+id = "J_FAN"
+kind = "header"
+rect = [95.5, 70, 99, 76]
+label = "FAN"
+part = "Fan header"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 14, 7, 66]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 70, 7, 83]
+label = "HDMI"
+part = "HDMI 2.1b"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [49, 38, 62, 58]
+part = "MLCC array behind the GPU"
+conf = "inferred"

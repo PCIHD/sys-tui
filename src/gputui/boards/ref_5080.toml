@@ -1,0 +1,185 @@
+id = "ref-5080"
+name = "NVIDIA RTX 5080 reference-style board — Gainward Phoenix GS layout"
+short = "RTX 5080 reference (Gainward)"
+skus = ["5080"]
+kind = "reference"
+vendor = 0x10B0
+pcb_mm = [175, 97]
+card_mm = [322, 128]
+fans = 3
+fan_mm = 95
+cooler = "Partner triple-fan cooler; the short PCB leaves the rear of the cooler flow-through"
+flow_through = true
+mem_part = "Samsung K4VAF325ZC-SC32 (GDDR7, 32 Gbps rated)"
+gpu_vrm = "14-phase NVVDD — MPS MP29816, MP87993 50 A DrMOS"
+mem_vrm = "3-phase FBVDD"
+sources = [
+  "https://tpucdn.com/review/gainward-geforce-rtx-5080-phoenix-gs/images/front_full.jpg",
+  "https://www.techpowerup.com/review/gainward-geforce-rtx-5080-phoenix-gs/5.html",
+  "https://download.alphacool.com/manual/10248_Alphacool_Core_Geforce_RTX_5080_Reference_with_backplate_Manual.pdf",
+]
+notes = ["Matches Alphacool's '5080 reference' block outline; used for non-FE 5080s without their own profile."]
+fingers = { x0 = 27, x1 = 71, physical = 16, electrical = 16 }
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [44, 26, 63, 66]
+part = "GB203-400-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [46, 12, 60, 25]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1"]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [65, 23, 73, 73]
+n = 4
+gap = 0.1
+ids = ["M2", "M3", "M4", "M5"]
+
+[[c]]
+id = "MB"
+kind = "mem"
+rect = [46, 68, 60, 81]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M6", "M7"]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [23, 13, 28, 84]
+n = 10
+rail = "NVVDD"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [17, 13.5, 22, 83.5]
+n = 10
+rail = "NVVDD"
+part = "MPS MP87993"
+rating = "50 A"
+
+[[c]]
+id = "TL"
+kind = "choke"
+rect = [31, 4, 39, 11]
+n = 2
+axis = "x"
+rail = "NVVDD"
+conf = "inferred"
+
+[[c]]
+id = "FV1"
+kind = "choke"
+rect = [69, 11, 74, 19]
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "RV"
+kind = "choke"
+rect = [79, 25, 84, 70]
+n = 3
+rails = ["NVVDD", "NVVDD", "FBVDD"]
+ids = ["RV1", "RV2", "RV3"]
+conf = "inferred"
+
+[[c]]
+id = "FV2"
+kind = "choke"
+rect = [76, 80, 81, 88]
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "U_GPU"
+kind = "ctrl"
+rect = [11, 5, 15, 10]
+part = "MPS MP29816-A"
+label = "MP29816"
+rail = "NVVDD"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [83, 3, 94, 15]
+part = "12V-2x6 (16-pin)"
+rating = "600 W"
+
+[[c]]
+id = "SH"
+kind = "shunt"
+rect = [78, 4, 81.5, 7]
+part = "R002 current-sense shunt"
+
+[[c]]
+id = "J8201"
+kind = "header"
+rect = [95, 30, 99, 45]
+label = "8P"
+part = "Unpopulated 2x4 pads (8-pin alt.)"
+
+[[c]]
+id = "J8202"
+kind = "header"
+rect = [95, 50, 99, 65]
+label = "8P"
+part = "Unpopulated 2x4 pads (8-pin alt.)"
+
+[[c]]
+id = "FANH"
+kind = "header"
+rect = [52, 2, 65, 6]
+n = 2
+axis = "x"
+ids = ["J801", "J101"]
+labels = ["FAN", "FAN"]
+part = "4-pin fan header"
+
+[[c]]
+id = "J100"
+kind = "header"
+rect = [66.5, 2, 69.5, 6]
+label = "J100"
+part = "3-pin header"
+
+[[c]]
+id = "U_RGB"
+kind = "mcu"
+rect = [88.5, 53.5, 91.5, 57]
+part = "RGB microcontroller"
+label = "MCU"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 18, 6.5, 68]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b (UHBR20)"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 72, 6.5, 84]
+label = "HDMI"
+part = "HDMI 2.1b"
+
+[[c]]
+id = "B_MLCC"
+kind = "mlcc"
+side = "back"
+rect = [48, 34, 59, 58]
+part = "MLCC array behind the GPU"
+conf = "inferred"

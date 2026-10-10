@@ -1,0 +1,128 @@
+id = "gainward-5060ti-8"
+name = "Gainward GeForce RTX 5060 Ti 8 GB (PG152)"
+short = "Gainward RTX 5060 Ti 8 GB"
+skus = ["5060Ti"]
+kind = "aib"
+vendor = 0x10B0
+board_code = "PG152"
+pcb_mm = [145, 105]
+card_mm = [250, 118]
+fans = 2
+fan_mm = 90
+cooler = "Dual-fan cooler"
+mem_part = "GDDR7, 28 Gbps (2 GB)"
+gpu_vrm = "5-phase NVVDD — AOZ73004CQI, Vishay SiC653A 50 A"
+mem_vrm = "2-phase FBVDD"
+sources = [
+  "https://tpucdn.com/review/gainward-geforce-rtx-5060-ti-8-gb/images/front.jpg",
+  "https://www.techpowerup.com/review/gainward-geforce-rtx-5060-ti-8-gb/5.html",
+]
+notes = ["8 GB board: the clamshell pads on the back stay empty."]
+fingers = { x0 = 20, x1 = 79, physical = 16, electrical = 8 }
+
+[[c]]
+id = "GPU"
+kind = "gpu"
+rect = [48, 34, 70, 62]
+part = "GB206-300-A1"
+
+[[c]]
+id = "MT"
+kind = "mem"
+rect = [49, 18, 69, 31]
+n = 2
+axis = "x"
+gap = 0.1
+ids = ["M0", "M1"]
+
+[[c]]
+id = "MR"
+kind = "mem"
+rect = [72, 37, 82, 62]
+n = 2
+gap = 0.1
+ids = ["M2", "M3"]
+
+[[c]]
+id = "LV"
+kind = "choke"
+rect = [27, 22, 33, 78]
+n = 5
+rail = "NVVDD"
+part = "Vishay SiC653A (50 A)"
+
+[[c]]
+id = "LS"
+kind = "stage"
+rect = [22, 22.5, 26.5, 77.5]
+n = 5
+rail = "NVVDD"
+part = "Vishay SiC653A"
+rating = "50 A"
+conf = "inferred"
+
+[[c]]
+id = "U_GPU"
+kind = "ctrl"
+rect = [22, 10, 26, 15]
+part = "AOZ73004CQI"
+label = "AOZ"
+rail = "NVVDD"
+conf = "inferred"
+
+[[c]]
+id = "FV"
+kind = "choke"
+rect = [85, 40, 91, 60]
+n = 2
+rail = "FBVDD"
+conf = "inferred"
+
+[[c]]
+id = "J_PWR"
+kind = "power"
+rect = [82, 2, 94, 13]
+part = "PCIe 8-pin"
+rating = "150 W"
+
+[[c]]
+id = "FANH"
+kind = "header"
+rect = [33, 1.5, 50, 5.5]
+n = 2
+axis = "x"
+ids = ["J_FAN1", "J_FAN2"]
+labels = ["FAN", "FAN"]
+part = "Fan header"
+
+[[c]]
+id = "DP"
+kind = "output"
+rect = [0.5, 14, 7, 66]
+n = 3
+labels = ["DP", "DP", "DP"]
+part = "DisplayPort 2.1b"
+
+[[c]]
+id = "HDMI"
+kind = "output"
+rect = [0.5, 70, 7, 83]
+label = "HDMI"
+part = "HDMI 2.1b"
+
+[[c]]
+id = "BPAD"
+kind = "pad"
+side = "back"
+rect = [49, 18, 69, 31]
+n = 2
+axis = "x"
+ids = ["BPAD0", "BPAD1"]
+
+[[c]]
+id = "BPADR"
+kind = "pad"
+side = "back"
+rect = [72, 37, 82, 62]
+n = 2
+ids = ["BPAD2", "BPAD3"]

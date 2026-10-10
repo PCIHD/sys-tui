@@ -1,0 +1,461 @@
+# MSI B650M GAMING PLUS WIFI (MS-7E24), Micro-ATX 243 × 243 mm.
+# Positions measured from the manual's "Übersicht der Komponenten" figure (p.27, 300 dpi
+# render, board outline = 0..100 %). Parts the figure does not draw (VRM chokes and
+# heatsinks, ICs under the I/O cover, chipset heatsink outline) are marked conf = "inferred".
+
+[board]
+name = "MSI B650M GAMING PLUS WIFI"
+short = "MSI B650M GAMING PLUS WIFI (MS-7E24)"
+vendor = "MSI"
+match = ["B650M GAMING PLUS WIFI", "MS-7E24"]
+form = "Micro-ATX"
+pcb_mm = [243, 243]
+socket = "AM5 (LGA1718)"
+chipset = "AMD B650 (Promontory 21)"
+superio = "Nuvoton NCT6687-R"
+vrm = "8+2+1 phases (Vcore + SoC + Misc)"
+sources = [
+  "https://download-2.msi.com/archive/mnu_exe/mb/B650MGAMINGPLUSWIFI_DE.pdf (layout p.27, spec p.17-20)",
+]
+notes = [
+  "M2_1 and M2_2 are both CPU-attached PCIe 4.0 x4; the slot→root-port mapping is inferred.",
+  "DIMM slot ↔ SPD address (0x50..0x53 → A1, A2, B1, B2) follows the usual AM5 convention.",
+  "nct6687 fan labels are mapped to headers in driver order (CPU, Pump, SYS1..SYS6).",
+]
+holes = [[15.3, 3.4], [55.0, 3.4], [96.6, 3.6], [96.6, 61.0], [15.3, 93.6], [96.6, 93.6]]
+
+# ----------------------------------------------------------------------------- CPU + VRM
+[[component]]
+id = "CPU"
+kind = "socket"
+rect = [40.3, 23.2, 63.1, 50.9]
+label = "AM5"
+part = "AM5 LGA1718 socket"
+
+[[component]]
+id = "HS_L"
+kind = "heatsink"
+rect = [16.0, 7.6, 29.6, 46.5]
+label = "VRM"
+part = "VRM heatsink (Vcore stages)"
+rail = "Vcore"
+conf = "inferred"
+
+[[component]]
+id = "HS_T"
+kind = "heatsink"
+rect = [33.2, 6.6, 66.0, 14.2]
+label = "VRM"
+part = "VRM heatsink (Vcore / SoC stages)"
+rail = "Vcore"
+conf = "inferred"
+
+[[component]]
+id = "L"
+kind = "choke"
+rect = [31.0, 19.5, 35.6, 51.0]
+n = 6
+axis = "y"
+gap = 0.6
+rail = "Vcore"
+part = "R22 choke"
+conf = "inferred"
+
+[[component]]
+id = "LT"
+kind = "choke"
+rect = [42.6, 14.6, 61.4, 17.2]
+n = 5
+axis = "x"
+gap = 0.7
+rails = ["Vcore", "Vcore", "VSOC", "VSOC", "VMISC"]
+part = "R22 choke"
+conf = "inferred"
+
+[[component]]
+id = "PWM"
+kind = "chip"
+rect = [31.4, 52.4, 34.6, 55.6]
+label = "PWM"
+part = "Multi-phase PWM controller"
+conf = "inferred"
+
+[[component]]
+id = "CPU_PWR1"
+kind = "power"
+rect = [17.1, 0.7, 24.1, 5.3]
+pins = 8
+label = "CPU_PWR1"
+part = "8-pin EPS +12V"
+
+[[component]]
+id = "CPU_PWR2"
+kind = "power"
+rect = [24.5, 0.7, 31.6, 5.3]
+pins = 8
+label = "CPU_PWR2"
+part = "8-pin EPS +12V"
+
+[[component]]
+id = "ATX_PWR1"
+kind = "power"
+rect = [95.2, 25.4, 99.4, 46.0]
+pins = 24
+label = "ATX_PWR1"
+part = "24-pin ATX"
+
+# ----------------------------------------------------------------------------- memory
+[[component]]
+id = "DIMM"
+kind = "dimm"
+rect = [73.7, 8.7, 88.0, 65.9]
+n = 4
+axis = "x"
+gap = 0.9
+ids = ["DIMMA1", "DIMMA2", "DIMMB1", "DIMMB2"]
+labels = ["A1", "A2", "B1", "B2"]
+binds = ["dimm:0x50", "dimm:0x51", "dimm:0x52", "dimm:0x53"]
+part = "DDR5 UDIMM slot"
+
+# ----------------------------------------------------------------------------- expansion
+[[component]]
+id = "PCI_E1"
+kind = "pcie"
+rect = [18.2, 64.4, 28.1, 67.1]
+lanes = 1
+source = "chipset"
+label = "PCI_E1"
+part = "PCIe 3.0 x1 (B650)"
+bind = "temp:PCIe x1"
+
+[[component]]
+id = "PCI_E2"
+kind = "pcie"
+rect = [18.2, 73.0, 60.0, 76.4]
+lanes = 16
+source = "cpu"
+label = "PCI_E2"
+part = "PCIe 4.0 x16 (CPU), steel armor"
+bind = "gpu:x16"
+
+[[component]]
+id = "PCI_E3"
+kind = "pcie"
+rect = [18.2, 89.3, 28.1, 92.1]
+lanes = 1
+source = "chipset"
+label = "PCI_E3"
+part = "PCIe 3.0 x1 (B650)"
+
+[[component]]
+id = "M2_1"
+kind = "m2"
+rect = [29.4, 61.6, 65.0, 70.2]
+lanes = 4
+source = "cpu"
+label = "M2_1"
+part = "M.2 2260/2280, PCIe 4.0 x4 (CPU)"
+bind = "nvme:0000:00:01.2"
+shield = true
+
+[[component]]
+id = "M2_2"
+kind = "m2"
+rect = [30.5, 78.4, 66.0, 87.4]
+lanes = 4
+source = "cpu"
+label = "M2_2"
+part = "M.2 2260/2280, PCIe 4.0 x4 (CPU)"
+bind = "nvme:0000:00:02.2"
+
+# ----------------------------------------------------------------------------- chipset + storage
+[[component]]
+id = "PCH"
+kind = "chipset"
+rect = [72.2, 75.4, 85.0, 88.0]
+label = "B650"
+part = "AMD B650 chipset (PCIe 4.0 x4 uplink)"
+bind = "temp:PCH"
+
+[[component]]
+id = "SATA_12"
+kind = "sata"
+rect = [94.0, 84.0, 99.6, 91.0]
+label = "SATA1/2"
+part = "2× SATA 6Gb/s (stacked, B650)"
+bind = "sata:1,2"
+
+[[component]]
+id = "SATA_4"
+kind = "sata"
+rect = [80.7, 95.4, 86.5, 98.3]
+label = "SATA4"
+part = "SATA 6Gb/s (B650)"
+bind = "sata:4"
+
+[[component]]
+id = "SATA_3"
+kind = "sata"
+rect = [87.5, 95.4, 93.2, 98.3]
+label = "SATA3"
+part = "SATA 6Gb/s (B650)"
+bind = "sata:3"
+
+# ----------------------------------------------------------------------------- I/O + ICs
+[[component]]
+id = "IO_BIOS"
+kind = "io"
+rect = [0.0, 3.0, 3.9, 6.6]
+label = "FLASH"
+ports = ["Flash BIOS button"]
+conf = "inferred"
+
+[[component]]
+id = "IO_USB1"
+kind = "io"
+rect = [0.0, 7.1, 7.7, 14.4]
+ports = ["usb5", "usb5"]
+part = "2× USB 5Gbps Type-A (ASM1074)"
+conf = "inferred"
+
+[[component]]
+id = "IO_VIDEO"
+kind = "io"
+rect = [0.0, 16.5, 11.6, 24.3]
+ports = ["hdmi", "dp"]
+part = "HDMI 2.1 + DisplayPort 1.4 (iGPU)"
+conf = "inferred"
+
+[[component]]
+id = "IO_USB2"
+kind = "io"
+rect = [0.4, 26.3, 7.7, 32.6]
+ports = ["usb5", "usb5"]
+part = "2× USB 5Gbps Type-A (ASM1074)"
+conf = "inferred"
+
+[[component]]
+id = "IO_USB3"
+kind = "io"
+rect = [0.4, 35.3, 7.7, 41.5]
+ports = ["usb10", "usb10"]
+part = "2× USB 10Gbps Type-A (CPU)"
+conf = "inferred"
+
+[[component]]
+id = "IO_LAN"
+kind = "io"
+rect = [0.4, 44.0, 7.7, 49.8]
+ports = ["lan", "usb10", "usbc"]
+part = "2.5G LAN + USB 10Gbps A (CPU) + USB-C 10Gbps (B650)"
+bind = "net:ethernet"
+conf = "inferred"
+
+[[component]]
+id = "WIFI"
+kind = "wifi"
+rect = [0.4, 51.5, 13.9, 55.0]
+label = "Wi-Fi"
+part = "MediaTek MT7922 (Wi-Fi 6E, BT 5.3), M.2 Key-E"
+bind = "net:wifi"
+conf = "inferred"
+
+[[component]]
+id = "IO_AUDIO"
+kind = "io"
+rect = [0.0, 57.0, 8.7, 61.6]
+ports = ["audio"]
+part = "3× audio jacks"
+conf = "inferred"
+
+[[component]]
+id = "LAN"
+kind = "chip"
+rect = [16.0, 49.0, 20.0, 53.0]
+label = "LAN"
+part = "Realtek RTL8125BG 2.5GbE"
+bind = "net:ethernet"
+conf = "inferred"
+
+[[component]]
+id = "USBHUB"
+kind = "chip"
+rect = [16.0, 56.0, 19.4, 59.4]
+label = "HUB"
+part = "ASMedia ASM1074 USB 5Gbps hub"
+conf = "inferred"
+
+[[component]]
+id = "CODEC"
+kind = "chip"
+rect = [2.2, 71.0, 7.0, 75.8]
+label = "ALC897"
+part = "Realtek ALC897 7.1 HD audio codec"
+conf = "inferred"
+
+[[component]]
+id = "SIO"
+kind = "chip"
+rect = [40.0, 88.4, 45.6, 93.6]
+label = "SIO"
+part = "Nuvoton NCT6687-R Super I/O / hardware monitor"
+conf = "inferred"
+
+[[component]]
+id = "BAT1"
+kind = "battery"
+rect = [9.5, 77.7, 19.3, 87.5]
+label = "BAT1"
+part = "CR2032 CMOS battery"
+bind = "in:VBat"
+
+# ----------------------------------------------------------------------------- fan headers
+[[component]]
+id = "CPU_FAN1"
+kind = "fan"
+rect = [68.3, 7.1, 72.4, 9.7]
+label = "CPU_FAN1"
+part = "4-pin PWM fan header"
+bind = "fan:CPU Fan"
+
+[[component]]
+id = "PUMP_FAN1"
+kind = "fan"
+rect = [71.2, 1.0, 75.3, 3.8]
+label = "PUMP_FAN1"
+part = "4-pin PWM pump header (3 A)"
+bind = "fan:Pump Fan"
+
+[[component]]
+id = "SYS_FAN1"
+kind = "fan"
+rect = [76.4, 1.0, 80.5, 3.8]
+label = "SYS_FAN1"
+part = "4-pin PWM fan header"
+bind = "fan:System Fan #1"
+
+[[component]]
+id = "SYS_FAN2"
+kind = "fan"
+rect = [10.1, 61.3, 12.5, 65.3]
+label = "SYS_FAN2"
+part = "4-pin PWM fan header"
+bind = "fan:System Fan #2"
+
+[[component]]
+id = "SYS_FAN3"
+kind = "fan"
+rect = [44.8, 95.4, 48.6, 98.2]
+label = "SYS_FAN3"
+part = "4-pin PWM fan header"
+bind = "fan:System Fan #3"
+
+# ----------------------------------------------------------------------------- headers
+[[component]]
+id = "JARGB_V2_2"
+kind = "header"
+rect = [81.8, 0.8, 86.4, 2.6]
+label = "ARGB"
+part = "3-pin 5V A-RAINBOW V2 header"
+
+[[component]]
+id = "JRGB2"
+kind = "header"
+rect = [87.8, 0.8, 92.6, 2.6]
+label = "RGB"
+part = "4-pin 12V RGB header"
+
+[[component]]
+id = "JUSB4"
+kind = "header"
+rect = [95.2, 51.2, 98.9, 57.4]
+label = "USB-C"
+part = "USB 3.2 Gen 2 Type-C front header (B650)"
+
+[[component]]
+id = "JUSB3"
+kind = "header"
+rect = [95.0, 73.5, 99.6, 83.6]
+label = "USB3"
+part = "USB 3.2 Gen 1 19-pin header (B650)"
+
+[[component]]
+id = "JTPM1"
+kind = "header"
+rect = [26.6, 53.6, 28.4, 59.0]
+label = "TPM"
+part = "TPM module header"
+
+[[component]]
+id = "JAUD1"
+kind = "header"
+rect = [7.7, 95.6, 12.9, 98.2]
+label = "AUD"
+part = "Front-panel audio header"
+
+[[component]]
+id = "JRGB1"
+kind = "header"
+rect = [16.0, 95.6, 20.1, 98.2]
+label = "RGB"
+part = "4-pin 12V RGB header"
+
+[[component]]
+id = "JARGB_V2_1"
+kind = "header"
+rect = [24.3, 95.6, 28.1, 98.2]
+label = "ARGB"
+part = "3-pin 5V A-RAINBOW V2 header"
+
+[[component]]
+id = "JDASH1"
+kind = "header"
+rect = [30.0, 95.6, 33.6, 98.2]
+label = "DASH"
+part = "Tuning controller header"
+
+[[component]]
+id = "JCI1"
+kind = "jumper"
+rect = [34.1, 95.6, 35.1, 98.2]
+part = "Chassis intrusion header"
+
+[[component]]
+id = "JBAT1"
+kind = "jumper"
+rect = [36.2, 95.6, 38.0, 98.2]
+part = "Clear CMOS jumper"
+
+[[component]]
+id = "JUSB1"
+kind = "header"
+rect = [50.5, 95.6, 55.9, 98.2]
+label = "USB2"
+part = "USB 2.0 header (B650)"
+
+[[component]]
+id = "JUSB2"
+kind = "header"
+rect = [60.5, 95.6, 65.7, 98.2]
+label = "USB2"
+part = "USB 2.0 header (B650)"
+
+[[component]]
+id = "JFP2"
+kind = "header"
+rect = [66.9, 95.6, 71.1, 98.2]
+label = "FP2"
+part = "Front panel header 2 (speaker)"
+
+[[component]]
+id = "JFP1"
+kind = "header"
+rect = [73.3, 95.6, 78.4, 98.2]
+label = "FP1"
+part = "Front panel header (power / reset / LEDs)"
+
+[[component]]
+id = "JOCFS1"
+kind = "jumper"
+rect = [77.6, 93.2, 78.9, 94.6]
+part = "Safe-boot jumper"
