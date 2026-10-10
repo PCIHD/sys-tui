@@ -9,6 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-# systui snapshots
+# systui / gputui snapshots and recordings (contain hostname, IPs, MACs, serials)
 systui-*.json
+systui-*.jsonl
+gputui-*.json
 .pytest_cache/
