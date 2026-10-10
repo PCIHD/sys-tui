@@ -7,7 +7,7 @@ import re
 
 from .. import bindings as B
 from ..boards import BoardProfile, Component
-from ..canvas import HEAT, LOAD, Canvas, mix, polyline_points, ramp, shade
+from ..canvas import HEAT, LOAD, Canvas, line_points, mix, polyline_points, ramp, shade
 from ..telemetry import SystemSnapshot
 from . import Scene
 from . import charts as ch
@@ -58,6 +58,8 @@ class BoardScene(Scene):
         self._phase: dict[str, float] = {}
         self._fan_phase: dict[str, float] = {}
         self._card_angle = 0.0
+        self._card_alpha = 1.0
+        self._focus: set[str] = set()
         self._layout()
         self._draw_static()
 
@@ -379,6 +381,14 @@ class BoardScene(Scene):
         x0, y0, x1, y1 = self.boxes["GPU"]
         cv = self.static
         self.card_px = sp.box_indices(cv, x0, y0, x1, y1)
+        # the card only shows in the gaps: bare PCB, traces and the overhang past the board edge
+        bx0, by0, bx1, by1 = self.board_box
+        self.card_gap = bytearray(len(cv.px))
+        for i in self.card_px:
+            x, y = i % cv.pw, i // cv.pw
+            if self.bare[i] or not (bx0 <= x < bx1 and by0 <= y < by1):
+                self.card_gap[i] = 1
+        self.card_body = [i for i in self.card_px if self.card_gap[i]]
         edge = set()
         for x in range(x0, x1):
             edge.add((x, y0))
@@ -386,25 +396,51 @@ class BoardScene(Scene):
         for y in range(y0, y1):
             edge.add((x0, y))
             edge.add((x1 - 1, y))
-        self.card_edge = [sp.idx(cv, x, y) for x, y in edge if sp.idx(cv, x, y) is not None]
+        self.card_edge = [sp.idx(cv, x, y) for x, y in sorted(edge) if sp.idx(cv, x, y) is not None]
+        self.card_dash = [sp.idx(cv, x, y) for x, y in sorted(edge)
+                          if sp.idx(cv, x, y) is not None and (x + y) // 2 % 2 == 0]
         H = y1 - y0
         L = x1 - x0
         fr = max(1.5, H * 0.40)
         n = 3 if L > 6 * fr else 2
         self.card_fans = [(x0 + L * (k + 0.5) / n, y0 + H / 2, fr) for k in range(n)]
 
+    def frame(self, t, snap=None, selected=None, hover=None, mode="live", highlight=None):
+        self._focus = {selected, hover} - {None}
+        return super().frame(t, snap, selected, hover, mode, highlight)
+
+    def _card_target(self) -> float:
+        """Card opacity: solid when it is the subject, near-invisible while peeking at a part under it."""
+        if "GPU" in self._focus:
+            return 1.0
+        cx0, cy0, cx1, cy1 = self.boxes["GPU"]
+        for cid in self._focus:
+            b = self.boxes.get(cid)
+            if b and b[0] < cx1 and cx0 < b[2] and b[1] < cy1 and cy0 < b[3]:
+                return 0.15
+        return 0.85
+
+    def _card_plot(self, cv: Canvas, x: int, y: int, c: int, a: float) -> None:
+        if 0 <= x < cv.pw and 0 <= y < cv.ph and self.card_gap[y * cv.pw + x]:
+            cv.blend(x, y, c, a)
+
     def _draw_card(self, cv: Canvas, t: float, dt: float, snap: SystemSnapshot | None, mode: str) -> None:
         gpu = B.gpu(snap) if snap else None
         px = cv.px
+        target = self._card_target()
+        self._card_alpha += (target - self._card_alpha) * (min(1.0, dt * 10) if dt else 1.0)
+        al = self._card_alpha
         tint = CARD
         if mode == "thermal" and gpu is not None:
             tint = mix(CARD, ramp(heat01(gpu.temp, 30, 88), HEAT), 0.55)
-        for i in self.card_px:
-            px[i] = mix(px[i], tint, 0.62)
+        body = 0.72 * al
+        for i in self.card_body:
+            px[i] = mix(px[i], tint, body)
         util = (gpu.util or 0) / 100 if gpu else 0.0
         ec = mix(CARD_EDGE, 0x76B900, 0.15 + 0.45 * util) if mode == "live" else CARD_EDGE
-        for i in self.card_edge:
-            px[i] = ec
+        ea = 0.35 + 0.65 * al
+        for i in self.card_edge if al > 0.5 else self.card_dash:  # dashed while peeking underneath
+            px[i] = mix(px[i], ec, ea)
         x0, y0, x1, y1 = self.boxes["GPU"]
         bx = int(self.X(-1.6))
         cv.fill(bx, y0, bx + max(1, int(self.mm(1.6))), y1, sp.SILVER)
@@ -413,13 +449,18 @@ class BoardScene(Scene):
         for k, (fx, fy, fr) in enumerate(self.card_fans):
             for a in range(0, 360, 12):
                 ang = math.radians(a)
-                cv.blend(int(fx + fr * math.cos(ang)), int(fy + fr * math.sin(ang)), 0x4A515B, 0.6)
+                self._card_plot(cv, int(fx + fr * math.cos(ang)), int(fy + fr * math.sin(ang)), 0x4A515B, 0.6 * al)
             blades = 7
             for j in range(blades):
                 ang = self._card_angle * (1 if k % 2 == 0 else -1) + 2 * math.pi * j / blades
-                cv.line(fx + 0.25 * fr * math.cos(ang), fy + 0.25 * fr * math.sin(ang),
-                        fx + 0.92 * fr * math.cos(ang + 0.35), fy + 0.92 * fr * math.sin(ang + 0.35), 0x8C96A2, 0.32)
-            cv.disc(fx, fy, max(0.6, fr * 0.2), 0x30343B)
+                for x, y in line_points(fx + 0.25 * fr * math.cos(ang), fy + 0.25 * fr * math.sin(ang),
+                                        fx + 0.92 * fr * math.cos(ang + 0.35), fy + 0.92 * fr * math.sin(ang + 0.35)):
+                    self._card_plot(cv, x, y, 0x8C96A2, 0.32 * al)
+            hub = max(0.6, fr * 0.2)
+            for y in range(int(fy - hub - 1), int(fy + hub + 2)):
+                for x in range(int(fx - hub - 1), int(fx + hub + 2)):
+                    if (x + 0.5 - fx) ** 2 + (y + 0.5 - fy) ** 2 <= hub * hub:
+                        self._card_plot(cv, x, y, 0x30343B, al)
         if self.labels and gpu is not None:
             parts = [gpu_short(gpu.name)]
             if gpu.temp is not None:

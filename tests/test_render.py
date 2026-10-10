@@ -42,6 +42,25 @@ def test_hit_and_navigation():
     assert "GPU" in sc.comps  # card ghost present when a GPU is reported
 
 
+def test_card_leaves_parts_under_it_visible():
+    sc = BoardScene(MSI, 160, 56, hint=SNAP)
+    cv = sc.frame(0.1, SNAP, mode="off")
+    under = [i for cid in ("M2_2", "PCH") for i in sc.card_px if not sc.card_gap[i]
+             and sc.boxes[cid][0] <= i % cv.pw < sc.boxes[cid][2] and sc.boxes[cid][1] <= i // cv.pw < sc.boxes[cid][3]]
+    assert under and all(cv.px[i] == sc.static.px[i] for i in under if i not in set(sc.card_edge))
+    assert any(cv.px[i] != sc.static.px[i] for i in sc.card_body)
+
+
+def test_card_fades_when_peeking_underneath():
+    sc = BoardScene(MSI, 160, 56, hint=SNAP)
+    for k in range(6):
+        sc.frame(k * 0.1, SNAP, hover="M2_2")
+    assert sc._card_alpha < 0.3
+    for k in range(6, 12):
+        sc.frame(k * 0.1, SNAP, selected="GPU")
+    assert sc._card_alpha > 0.9
+
+
 def test_card_hidden_without_gpu():
     snap = SRC.collect(SRC.t0 + 5)
     snap.gpus = []
