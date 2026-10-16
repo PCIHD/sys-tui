@@ -19,7 +19,7 @@ systui reads the motherboard model from DMI and draws that board's **actual layo
 ```bash
 uv sync
 uv run systui                   # motherboard TUI
-uv run systui --tab cpu         # open on a tab: board cpu mem disk net proc sens
+uv run systui --tab cpu         # open on a tab: board cpu mem disk net proc sens ipc
 uv run systui --once            # print the board, overview, cores and all sensors once
 uv run systui --json            # one snapshot as JSON
 uv run systui --demo            # synthetic data, no sensors needed
@@ -40,8 +40,9 @@ The best terminal is a true-colour one that is at least about 160×45.
 
 | Key | Action |
 |---|---|
-| `1`–`7` | Tabs: Board · CPU · Memory · Storage · Network · Processes · Sensors |
+| `1`–`8` | Tabs: Board · CPU · Memory · Storage · Network · Processes · Sensors · IPC |
 | mouse / `Tab` / arrows | Select a board part; the side panel shows everything known about it |
+| `8`, then mouse / `Tab` | IPC map: select a process, container, VM or LAN peer to narrow the links table. Enter on a link lights both ends |
 | `h` | Board overlay: live animation → thermal → off |
 | `l` · `c` | Labels on/off · graphics-card footprint on/off |
 | `g` / `G` / Enter on the card | Fly into the GPU. Top tabs become Card · PCB · Back · Die · Cores. Tables underneath. Esc restores Board · CPU · … |
@@ -51,6 +52,30 @@ The best terminal is a true-colour one that is at least about 160×45.
 | `p` · `+` `-` · `s` | Pause · poll interval · save a JSON snapshot |
 
 `G` finds gputui with `--gputui 'cmd'` or `$SYSTUI_GPUTUI` first, then `gputui` on `PATH`, then `uv run --project` of this checkout.
+
+## IPC: who talks to whom
+
+Tab `8` shows the channels between processes, containers, VMs and the LAN (`uv run systui --tab ipc`).
+
+- **The machine frame.** It holds this host's busiest processes, one row each. Same-name processes fold into `name ×n`.
+- **Arcs.** Unix sockets (violet) and pipes (green) between processes are drawn as arcs in the left gutter. With nothing selected, only the busiest few are drawn; selecting a node draws all of its arcs.
+- **Lanes.** Lanes in the channel carry TCP/UDP to each container or VM tile.
+- **The NIC.** Everything that leaves the machine goes through the NIC on the frame's right edge. A trunk runs from it to the LAN peers, and from the router to the Internet.
+
+Traffic follows the board's convention:
+- ▲ cyan runs towards the machine-side end. ▼ orange runs away from it.
+- A process's ▲ is what it receives.
+- A container, VM, peer or the Internet's ▲ is what it sends towards this host.
+
+Links without byte counters are steady traces. Unix sockets and pipes have none; neither do sockets inside a container's netns.
+
+Below the map, a table lists every channel: kind, both ends with pid and address, state, ▲▼ rate, and a ● live / ◐ derived tag. Pipes and socketpairs between the same two processes fold into one row (`unix ×3`). The side panel shows the selected node:
+- a process: command line
+- a container: image, status, IPs, published ports and netns
+- a VM: its tap
+- a LAN peer: MAC, reverse-DNS name and whether it is the gateway
+
+The walk is cheap but not free. It reads every `/proc/<pid>/fd`, at about 30 ms here. So it runs only while the tab is showing, does a full pass every 3rd poll, and only re-reads TCP byte counters in between.
 
 ## What the board shows
 
@@ -80,6 +105,9 @@ Each value in the detail panel carries one of three tags: **● live** (read fro
 | Storage | psutil disk counters, `/sys/block`, NVMe hwmon, the PCIe link from sysfs, SATA port from the `ataN` → controller mapping |
 | Network | psutil, `/proc/net/wireless`, and NIC hwmon (`r8169`, `mt7921`) matched through the device tree |
 | GPU | NVML (`nvidia-ml-py`, optional) and `amdgpu` sysfs for the iGPU; PCIe throughput to and from the card from NVML |
+| IPC | `/proc/<pid>/fd` maps socket and pipe inodes to processes; `fdinfo` flags give pipe direction. `NETLINK_SOCK_DIAG` (what `ss` uses, unprivileged) gives Unix peers and TCP `tcp_info` byte counts. |
+| Containers | podman/docker cgroups (`libpod-<id>.scope`), names, IPs and ports from the docker-compatible API socket (only re-read when the set changes), `/proc/<ctr-pid>/net/{dev,tcp}` for each container's own netns |
+| VMs, LAN | VMs from `/run/systemd/machines` and `qemu-system-*` processes, with tap counters via the tun fd's `iff:`. LAN peers from `/proc/net/arp`, the gateway from `/proc/net/route`, reverse DNS on a background thread |
 
 Slow hwmon chips (an NVMe SMART temperature query can take about 40 ms) are re-read every 5th poll. In between, their last values are shown.
 
@@ -131,6 +159,10 @@ Board profiles live in `src/gputui/boards/`. See the gputui docstring in that pa
 - **No per-slot PCIe counters** on AMD client boards, so M.2, SATA and NIC traffic is the device's own rate and the x1 slots show none. Only the NVIDIA card reports its PCIe throughput.
 - **The die view is schematic.** The CCD/IOD placement under the IHS is approximate. Per-core load and clocks are real.
 - **Footprint, not a model:** the card is drawn as a generic 304 × 61 mm triple-slot outline, since systui doesn't know the card's dimensions. For the real PCB, press `G`.
+- **IPC: no byte counts for Unix sockets or pipes.** They show that a channel exists, not how busy it is. TCP has live rates. Inside a container's own netns only the interface totals are known, not per-connection rates.
+- **IPC: other users' fds need root.** Unprivileged, those processes, and capability-protected ones such as the Wayland compositor, show as one `unreadable` row. `./systui-root` sees them, and it also finds rootless containers through `$SUDO_UID`.
+- **IPC: rootless container mapping is ◐.** Traffic leaves rootless containers through `rootlessport` (published ports) and `pasta`/`slirp4netns` (outbound). Those sockets are charged to a container by matching published ports and remote addresses.
+- **IPC: no IPv6 neighbours.** LAN peers come from `/proc/net/arp`, which is IPv4. An IPv6 peer appears only while there is a connection to it.
 
 ## Development
 

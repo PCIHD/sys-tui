@@ -225,3 +225,80 @@ def test_dimm_footer_says_why_live_power_is_missing():
     P.Dimms().draw(cv, snap, History(), 0.0)
     text = "".join(item[0] for _, item in sorted(cv.text.items(), key=lambda kv: (kv[0][1], kv[0][0])))
     assert "DIMM power: no access" in text
+
+
+def _overlap(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+@pytest.mark.parametrize("size", [(60, 16), (120, 36), (170, 44)], ids=lambda s: f"{s[0]}x{s[1]}")
+def test_ipc_map_renders_and_places_every_node_once(size):
+    from systui.render.ipc import IpcMap
+
+    w, h = size
+    m = IpcMap()
+    for t in (0.1, 0.4):
+        cv = m.canvas(w, h)
+        m.draw(cv, SNAP, HIST, t)
+        assert (cv.w, cv.h) == (w, h) and len(cv.px) == w * h * 2
+    boxes = list(m.boxes.items())
+    for i, (nid, b) in enumerate(boxes):
+        assert 0 <= b[0] < b[2] <= w and 0 <= b[1] < b[3] <= h, nid
+        for other, c in boxes[i + 1:]:
+            assert not _overlap(b, c), (nid, other)
+    ids = {n.id for n in SNAP.ipc.nodes}
+    if w >= 120:  # room for every guest, the LAN and the Internet
+        assert ids <= set(m.boxes) | {"host"}
+    assert "ctr:44254bc720fd" in m.boxes
+
+
+def test_ipc_map_waits_for_data_and_survives_tiny_panels():
+    from systui.render.ipc import IpcMap
+    from systui.telemetry import SystemSnapshot
+
+    cv = IpcMap().canvas(80, 20)
+    IpcMap().draw(cv, SystemSnapshot(t=0.0), History(), 0.0)
+    assert "waiting" in "".join(v[0] for v in cv.text.values())
+    cv = IpcMap().canvas(30, 6)
+    IpcMap().draw(cv, SNAP, HIST, 0.0)
+
+
+def test_ipc_map_keeps_rows_stable_and_folds_the_rest():
+    from systui.render.ipc import IpcMap
+    from systui.telemetry import IpcLink, IpcNode, IpcStat, SystemSnapshot
+
+    nodes = [IpcNode("host", "host", "box")] + [IpcNode(f"proc:{i}", "process", f"p{i:02d}") for i in range(40)]
+    links = [IpcLink(f"proc:{i}", f"proc:{i + 1}", "unix") for i in range(39)]
+    snap = SystemSnapshot(t=0.0, ipc=IpcStat(nodes, links, {"unix": 39}))
+    m = IpcMap()
+    cv = m.canvas(120, 20)
+    m.draw(cv, snap, History(), 0.0)
+    rows = [nid for nid in m.boxes if nid.startswith("proc:")]
+    assert 0 < len(rows) < 40
+    text = "".join(item[0] for _, item in sorted(cv.text.items(), key=lambda kv: (kv[0][1], kv[0][0])))
+    assert f"+{40 - len(rows)} more processes" in text
+    m.draw(m.canvas(120, 20), snap, History(), 0.5)
+    assert [nid for nid in m.boxes if nid.startswith("proc:")] == rows
+
+
+def test_ipc_map_folds_same_name_processes_into_one_row():
+    from systui.render.ipc import IpcMap
+    from systui.tables import ipc_node, ipc_rows
+    from systui.telemetry import IpcLink, IpcNode, IpcStat, SystemSnapshot
+
+    nodes = [IpcNode("host", "host", "box"), IpcNode("wan", "wan", "Internet"), IpcNode("proc:3", "process", "dbus")]
+    nodes += [IpcNode(f"proc:{i}", "process", "claude", pids=[i]) for i in (1, 2)]
+    links = [IpcLink("proc:1", "wan", "tcp", in_bps=100.0, out_bps=10.0),
+             IpcLink("proc:2", "wan", "tcp", in_bps=50.0, out_bps=5.0), IpcLink("proc:2", "proc:3", "unix")]
+    from systui.telemetry.ipc import rollup
+
+    rollup({n.id: n for n in nodes}, links)
+    ipc = IpcStat(nodes, links, {"tcp": 2, "unix": 1})
+    m = IpcMap()
+    m.draw(m.canvas(120, 24), SystemSnapshot(t=0.0, ipc=ipc), History(), 0.0)
+    assert "group:claude" in m.boxes and "proc:1" not in m.boxes
+    assert m.members("group:claude") == {"proc:1", "proc:2"} and m.members("proc:3") == {"proc:3"}
+    g = ipc_node(ipc, "group:claude", m.members("group:claude"))
+    assert (g.name, g.pids, g.in_bps) == ("claude ×2", [1, 2], 150.0)
+    rows = {r.key: r.value for r in ipc_rows(ipc, "group:claude", None, m.members("group:claude"))}
+    assert rows["Links"] == "2 tcp · 1 unix" and "dbus (unix)" in rows["Talks to"]

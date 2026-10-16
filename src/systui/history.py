@@ -85,6 +85,12 @@ class History:
             if g.pcie_rx_bps is not None or g.pcie_tx_bps is not None:
                 self.push(f"{p}:pcie:in", g.pcie_tx_bps)  # card → host
                 self.push(f"{p}:pcie:out", g.pcie_rx_bps)
+        if s.ipc is not None:
+            # not per process: History never drops a key, and pids churn
+            for node in s.ipc.nodes:
+                if node.kind in ("container", "vm", "peer", "wan"):
+                    self.push(f"ipc:{node.id}:in", node.in_bps)
+                    self.push(f"ipc:{node.id}:out", node.out_bps)
         for r in s.sensors:
             if r.kind in ("energy",):
                 continue

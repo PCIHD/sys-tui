@@ -23,19 +23,21 @@ from . import tables
 from .boards import Match, identify
 from .history import History
 from .render import panels as P
-from .widgets import BoardView, DetailPanel, GpuPanel, PanelView
+from .render.ipc import IpcMap
+from .widgets import BoardView, DetailPanel, GpuPanel, IpcDetail, IpcView, PanelView
 
 MODES = ["live", "thermal", "off"]
 TABS = [("board", "Board"), ("cpu", "CPU"), ("mem", "Memory"), ("disk", "Storage"), ("net", "Network"),
-        ("proc", "Processes"), ("sens", "Sensors")]
+        ("proc", "Processes"), ("sens", "Sensors"), ("ipc", "IPC")]
 SYS_TAB_LABELS = {
     "board": "1 Board", "cpu": "2 CPU", "mem": "3 Memory", "disk": "4 Storage",
-    "net": "5 Network", "proc": "6 Processes", "sens": "7 Sensors",
+    "net": "5 Network", "proc": "6 Processes", "sens": "7 Sensors", "ipc": "8 IPC",
 }
 GPU_TAB_LABELS = {
     "board": "1 Card", "cpu": "2 PCB", "mem": "3 Back", "disk": "4 Die",
-    "net": "5 Cores", "proc": "6 GPU procs", "sens": "7 Overview",
+    "net": "5 Cores", "proc": "6 GPU procs", "sens": "7 Overview", "ipc": "8 IPC",
 }
+IPC_ROWS = 300  # the links table; the map aggregates the rest
 GPU_TAB = {"board": "gpu-card", "cpu": "gpu-front", "mem": "gpu-back", "disk": "gpu-die", "net": "gpu-cores"}
 LAYER_TAB = {v: k for k, v in GPU_TAB.items()}
 
@@ -68,8 +70,11 @@ class SysTuiApp(App):
     TabPane { padding: 0; }
     BoardView, PanelView { border: round #3a4658; border-title-color: #8fb8de; border-title-style: bold; }
     BoardView:focus { border: round #39c5ff; }
-    #side { width: 58; }
-    #detail-scroll { height: 1fr; border: round #3a4658; border-title-color: #8fb8de; padding: 0 1; }
+    #side, #ipc-side { width: 58; }
+    #detail-scroll, #ipc-scroll { height: 1fr; border: round #3a4658; border-title-color: #8fb8de; padding: 0 1; }
+    IpcView:focus { border: round #39c5ff; }
+    #ipcmap { height: 3fr; min-height: 14; }
+    #ipc-links { height: 2fr; min-height: 6; }
     #gpu { height: auto; border: round #3a4658; border-title-color: #8fb8de; padding: 0 1; }
     #overview { height: 18; }
     #overview.hidden, #gpu-hist.hidden, #gpu-tabs.hidden { display: none; }
@@ -120,6 +125,7 @@ class SysTuiApp(App):
         self.interval = interval
         self.paused = False
         self.history = History()
+        self._want_ipc(initial_tab == "ipc")
         self.snapshot = source.collect()
         self.history.ingest(self.snapshot)
         self.match: Match = identify(self.snapshot, force_board)
@@ -136,6 +142,9 @@ class SysTuiApp(App):
         self._timer = None
         self._polling = False
         self._syncing_tabs = False
+        self._pending_tab: str | None = None  # a system tab asked for from GPU mode, opened once back on the board
+        self._ipc_links: list = []  # rows of #ipc-links, in order
+        self._ipc_table_w = -1  # #ipc-links width its columns were sized for
 
     # --------------------------------------------------------------------- layout
     def compose(self) -> ComposeResult:
@@ -175,6 +184,14 @@ class SysTuiApp(App):
                     yield PanelView(P.Fans(), h, id="fans")
                     with VerticalScroll(id="sens-scroll"):
                         yield Static(id="sensors")
+            with TabPane("8 IPC", id="ipc"):
+                with Horizontal():
+                    with Vertical():
+                        yield IpcView(IpcMap(), h, id="ipcmap")
+                        yield DataTable(id="ipc-links", zebra_stripes=True, cursor_type="row")
+                    with Vertical(id="ipc-side"):
+                        with VerticalScroll(id="ipc-scroll"):
+                            yield IpcDetail(id="ipc-detail")
         with Vertical(id="stage"):
             with Horizontal(id="board-top"):
                 yield BoardView(self.match, id="boardview")
@@ -215,6 +232,7 @@ class SysTuiApp(App):
         self.query_one("#gpu-hist").border_title = "GPU history (2 min)"
         self.query_one("#sens-scroll").border_title = "hwmon sensors (min / max since start)"
         self._sync_stage()
+        self.query_one("#ipc-scroll").border_title = "Node"
         table = self.query_one("#procs", DataTable)
         for col in tables.PROC_COLS:
             table.add_column(col, key=col)
@@ -281,6 +299,8 @@ class SysTuiApp(App):
             self._refresh_procs()
         elif active == "sens":
             self.query_one("#sensors", Static).update(tables.sensors_table(snap, self.history))
+        elif active == "ipc":
+            self._refresh_ipc()
 
     def _header(self) -> None:
         s, m = self.snapshot, self.match
@@ -335,11 +355,55 @@ class SysTuiApp(App):
         self.query_one("#proc-head", Static).update(
             Text.assemble((f" {len(procs)} processes", "bold"), f"  ·  sorted by {name}{filt}  ·  o: change sort  ·  click a row to light the board"))
 
+    def _want_ipc(self, on: bool) -> None:
+        """The IPC walk reads every process's fds: only run it while the tab shows."""
+        if hasattr(self.source, "want_ipc"):
+            self.source.want_ipc = on
+
+    def _refresh_ipc(self) -> None:
+        view = self.query_one(IpcView)
+        ipc = self.snapshot.ipc
+        members = view.panel.members(view.panel.selected)  # a folded row stands for all its processes
+        if ipc is not None and members and not any(ipc.node(m) for m in members):
+            view.panel.selected, members = None, set()  # the process exited or the container stopped
+        sel = view.panel.selected
+        self.query_one(IpcDetail).show(ipc, sel, self.history, members)
+        table = self.query_one("#ipc-links", DataTable)
+        mine = [k for k in ipc.links if k.a in members or k.b in members] if ipc and sel else ipc.links if ipc else []
+        links = tables.ipc_sorted(mine)[:IPC_ROWS]
+        nodes = {n.id: n for n in ipc.nodes} if ipc else {}
+        row = table.cursor_row
+        if table.size.width != self._ipc_table_w:
+            # fixed widths: auto-sized columns only ever grow, and a long Unix path once would
+            # push State and the rates off-screen for good
+            self._ipc_table_w = table.size.width
+            table.clear(columns=True)
+            for col, w in zip(tables.IPC_COLS, tables.ipc_widths(table.size.width)):
+                table.add_column(col, key=col or "tag", width=w)
+        table.clear()
+        for i, k in enumerate(links):
+            table.add_row(*tables.ipc_row(k, nodes), key=str(i))
+        self._ipc_links = links
+        if links:
+            table.move_cursor(row=min(row, len(links) - 1))
+
+    def on_ipc_view_selected(self, event: IpcView.Selected) -> None:
+        self._refresh_ipc()
+
     def on_board_view_selected(self, event: BoardView.Selected) -> None:
         self.part_filter = event.cid
         self._refresh_detail()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id == "ipc-links":
+            try:
+                k = self._ipc_links[int(str(event.row_key.value))]
+            except (IndexError, TypeError, ValueError):
+                return
+            view = self.query_one(IpcView)
+            view.panel.highlight = {k.a, k.b} - {""}
+            view.redraw()
+            return
         if event.data_table.id != "procs":
             return
         try:
@@ -368,11 +432,21 @@ class SysTuiApp(App):
                 self.query_one("#gpu-tabs", TabbedContent).active = f"gtab{GT.TABS.index('Processes')}"
             elif tid == "sens":
                 self.query_one("#gpu-tabs", TabbedContent).active = "gtab0"
+            elif tid == "ipc" and not board.transitioning:
+                self._pending_tab = "ipc"  # a whole-system view: fly back out to the board first
+                self.action_unzoom()
             return
         self._sync_stage()
+        on_ipc = event.pane.id == "ipc"
+        was = getattr(self.source, "want_ipc", True)
+        self._want_ipc(on_ipc)
         self._apply(self.snapshot, ingest=False)
         if event.pane.id == "board":
             self.query_one(BoardView).focus()
+        elif on_ipc:
+            self.query_one(IpcView).focus()
+            if not was:
+                self.poll()  # don't wait a whole interval for the first walk
 
     # --------------------------------------------------------------------- actions
     def action_tab(self, tid: str) -> None:
@@ -490,9 +564,12 @@ class SysTuiApp(App):
         board.begin_transition("board", focus_id=focus, inbound=False)
 
     def on_board_view_transitioned(self, event: BoardView.Transitioned) -> None:
-        self._set_chrome(event.layer)
+        self._set_chrome(event.layer)  # forces the Board tab on the way out of GPU mode
         self._refresh_detail()
         self._header()
+        if self._pending_tab and event.layer == "board":
+            tab, self._pending_tab = self._pending_tab, None
+            self.query_one("#tabs", TabbedContent).active = tab
 
     def _set_tab_labels(self, labels: dict[str, str]) -> None:
         tabs = self.query_one("#tabs", TabbedContent)
@@ -515,6 +592,13 @@ class SysTuiApp(App):
     def _set_chrome(self, layer: str) -> None:
         gpu_mode = layer.startswith("gpu-")
         deep = gpu_mode or layer == "cpu-die"
+        if gpu_mode:
+            self._want_ipc(False)  # GPU tab switches return early in on_tabbed_content_tab_activated
+            if self.focused is not None and self.focused is not self.query_one(BoardView):
+                # focus would fall to the next widget in the pane being hidden, and TabbedContent
+                # follows focus: it would switch straight back to that tab
+                self.set_focus(None)
+                self.call_after_refresh(self.query_one(BoardView).focus)
         self.query_one("#overview").set_class(deep, "hidden")
         self.query_one("#gpu-hist").set_class(not gpu_mode, "hidden")
         self.query_one("#gpu-tabs").set_class(not gpu_mode, "hidden")

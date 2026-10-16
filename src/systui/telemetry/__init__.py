@@ -348,6 +348,71 @@ class ProcStat:
 
 
 @dataclass
+class IpcNode:
+    """One talker on the IPC map. ``in_bps`` (▲) is what a process receives. For a container, VM,
+    peer or the Internet, it is what that node sends towards this host. ``out_bps`` (▼) is the
+    reverse, so a container's ▲ is what the container transmits."""
+
+    id: str  # host | proc:<pid> | hidden | ctr:<id12> | vm:<name> | peer:<ip> | wan
+    kind: str  # host | process | container | vm | peer | wan
+    name: str
+    sub: str = ""  # image, user, MAC…
+    runtime: str = ""  # podman | docker | distrobox | toolbox | lxc | qemu | nspawn
+    state: str = ""
+    addrs: list[str] = field(default_factory=list)
+    pids: list[int] = field(default_factory=list)
+    netns: int | None = None
+    ports: list[str] = field(default_factory=list)  # published, "0.0.0.0:8080→80/tcp"
+    in_bps: float | None = None
+    out_bps: float | None = None
+    prov: str = "live"  # live | derived
+    cmd: str = ""
+    dns: str = ""  # reverse-DNS name (peers), derived
+    router: bool = False
+    iface: str = ""  # tap of a VM, NIC of a peer
+
+
+@dataclass
+class IpcLink:
+    """A channel between two nodes, ``a`` → ``b`` (client → server, writer → reader). ``in_bps``
+    flows towards ``a``. Pipes and socketpairs between the same two processes fold into one
+    link with ``count``."""
+
+    a: str
+    b: str  # "" for kind == "listen"
+    kind: str  # pipe | unix | tcp | udp | listen
+    a_end: str = ""  # "ip:port", or the Unix path on the b side
+    b_end: str = ""
+    pid_a: int | None = None
+    pid_b: int | None = None
+    state: str = ""
+    in_bps: float | None = None
+    out_bps: float | None = None
+    count: int = 1
+    prov: str = "live"
+    ino: int = 0  # socket inode (tcp/udp), or the pipe inode
+
+    @property
+    def bps(self) -> float:
+        return (self.in_bps or 0.0) + (self.out_bps or 0.0)
+
+
+@dataclass
+class IpcStat:
+    nodes: list[IpcNode] = field(default_factory=list)
+    links: list[IpcLink] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)  # per link kind
+    note: str = ""  # what is hidden and why
+    age_s: float = 0.0  # since the last full process walk
+
+    def node(self, nid: str) -> IpcNode | None:
+        return next((n for n in self.nodes if n.id == nid), None)
+
+    def links_of(self, nid: str) -> list[IpcLink]:
+        return [k for k in self.links if nid in (k.a, k.b)]
+
+
+@dataclass
 class BoardInfo:
     vendor: str = ""
     name: str = ""
@@ -373,6 +438,7 @@ class SystemSnapshot:
     sensors: list[Reading] = field(default_factory=list)
     procs: list[ProcStat] = field(default_factory=list)
     psi: Psi | None = None
+    ipc: IpcStat | None = None  # only while something shows it: the process walk is not free
 
     # ------------------------------------------------------------------ lookups
     def reading(self, chip: str, label: str) -> Reading | None:
@@ -417,7 +483,21 @@ class SystemSnapshot:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["procs"] = d["procs"][:25]
+        if self.ipc is not None:
+            d["ipc"] = ipc_dict(self.ipc)
         return d
+
+
+def ipc_dict(ipc: IpcStat, keep: int = 100) -> dict:
+    """``asdict`` of the busiest ``keep`` links and the nodes they touch. A desktop has hundreds of
+    socketpairs, which would swamp ``--json`` and recordings."""
+    links = sorted(ipc.links, key=lambda k: (k.bps, k.count), reverse=True)[:keep]
+    used = {k.a for k in links} | {k.b for k in links}
+    nodes = [n for n in ipc.nodes if n.kind != "process" or n.id in used]
+    d = asdict(ipc)
+    d["nodes"] = [asdict(n) for n in nodes]
+    d["links"] = [asdict(k) for k in links]
+    return d
 
 
 # ------------------------------------------------------------------------- source
@@ -430,6 +510,7 @@ class LinuxSource:
         from . import pmic
         from . import processes
 
+        from .ipc import IpcTracker
         from .sensors import HwmonReader
 
         self.fs = SysFS(root)
@@ -440,6 +521,8 @@ class LinuxSource:
         self.nvml = gpu_mod.Nvml() if gpu else None
         self.umc = perf.UmcBandwidth(self.fs)
         self.pmic = pmic.Meter(self.fs) if dimm_power else None  # writes the PMIC's ADC enable: opt-in
+        self.ipc = IpcTracker(self.fs)
+        self.want_ipc = False  # the app turns this on while the IPC tab is showing
         self.t0 = time.monotonic()
 
     def collect(self, now: float | None = None) -> SystemSnapshot:
@@ -470,6 +553,8 @@ class LinuxSource:
         if self.procs is not None:
             snap.procs = self.procs.collect(now)
             _annotate_procs(snap)
+        if self.want_ipc:
+            snap.ipc = self.ipc.collect(now)
         return snap
 
     def close(self) -> None:
@@ -480,6 +565,7 @@ class LinuxSource:
         self.umc.close()
         if self.pmic is not None:
             self.pmic.close()
+        self.ipc.close()
 
 
 def _annotate_procs(snap: SystemSnapshot) -> None:

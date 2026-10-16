@@ -12,7 +12,7 @@ from rich.rule import Rule
 
 from .boards import identify, load_profiles
 
-VIEWS = ("board", "cpu", "threads", "package", "mem", "dimms", "disk", "net", "fans", "overview")
+VIEWS = ("board", "cpu", "threads", "package", "mem", "dimms", "disk", "net", "fans", "overview", "ipc")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -20,7 +20,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--interval", type=float, default=1.0, help="poll interval in seconds (default 1)")
     ap.add_argument("--board", help="force a board profile id (see --list-boards)")
     ap.add_argument("--demo", action="store_true", help="synthetic data instead of this machine's sensors")
-    ap.add_argument("--tab", default="board", choices=("board", "cpu", "mem", "disk", "net", "proc", "sens"),
+    ap.add_argument("--tab", default="board", choices=("board", "cpu", "mem", "disk", "net", "proc", "sens", "ipc"),
                     help="tab to open on")
     ap.add_argument("--once", action="store_true", help="print the board, overview charts and sensors once and exit")
     ap.add_argument("--json", action="store_true", help="print one snapshot as JSON and exit")
@@ -46,7 +46,9 @@ def _source(args):
         return DemoSource()
     from .telemetry import LinuxSource
 
-    return LinuxSource(gpu=not args.no_gpu, dimm_power=args.dimm_power)
+    src = LinuxSource(gpu=not args.no_gpu, dimm_power=args.dimm_power)
+    src.want_ipc = args.json or args.tab == "ipc" or ((args.once or args.png or args.gif) and args.view == "ipc")
+    return src
 
 
 def _warm(src, args, n: int = 1):
@@ -71,6 +73,7 @@ def _warm(src, args, n: int = 1):
 def render_view(view: str, match, snap, hist, w: int, h: int, overlay: str = "live"):
     from .render import panels as P
     from .render.board import BoardScene
+    from .render.ipc import IpcMap
 
     if view == "board":
         sc = BoardScene(match.profile, w, h, hint=snap)
@@ -78,7 +81,7 @@ def render_view(view: str, match, snap, hist, w: int, h: int, overlay: str = "li
         return sc.frame(0.5, snap, selected=None, mode=overlay), sc.title
     panel = {
         "cpu": P.CoreGrid(), "threads": P.Threads(), "package": P.Package(), "mem": P.Memory(),
-        "dimms": P.Dimms(match.profile), "fans": P.Fans(), "overview": P.Overview(),
+        "dimms": P.Dimms(match.profile), "fans": P.Fans(), "overview": P.Overview(), "ipc": IpcMap(),
         "disk": P.Disk((snap.physical_disks() or snap.disks)[0].name) if snap.disks else P.Partitions(),
         "net": P.Net((snap.physical_nets() or snap.nets)[0].name) if snap.nets else P.Overview(),
     }[view]
