@@ -6,8 +6,8 @@ import math
 import random
 import time
 
-from . import (BoardInfo, CpuStat, Dimm, DiskStat, GpuProc, GpuStat, IpcLink, IpcNode, IpcStat, MemStat, NetStat,
-               PartStat, ProcStat, Psi, PsiLine, Reading, SystemSnapshot, ZramStat)
+from . import (BoardInfo, CpuStat, Dimm, DiskStat, GpuProc, GpuStat, IpcEvent, IpcLink, IpcNode, IpcStat, MemStat,
+               NetStat, PartStat, ProcStat, Psi, PsiLine, Reading, SystemSnapshot, ZramStat)
 
 GiB = 2**30
 
@@ -208,6 +208,16 @@ def demo_ipc(t: float, hostname: str) -> IpcStat:
         IpcLink("ctr:df517a104788", "", "listen", "0.0.0.0:5432", state="LISTEN"),
         IpcLink("ctr:44254bc720fd", "", "listen", "0.0.0.0:8080", state="LISTEN"),
     ]
+    # `code` fetches something every other 6 s: a link that opens and closes, for the events log
+    period, wall = 6.0, time.time()
+    fetch = ("192.168.1.10:51900", "93.184.215.14:443")
+    if int(t // period) % 2 == 0:
+        links.append(tcp("proc:1005", "wan", *fetch, 1005, 4e4, 2e3))
+    events = [IpcEvent(wall - t - 40, "new peer", "peer", "peer:192.168.1.34", "", "192.168.1.34", "laptop"),
+              IpcEvent(wall - t - 30, "started", "container", "ctr:44254bc720fd", "", "", "llm-llamacpp-1"),
+              IpcEvent(wall - t - 29, "listening", "listen", "ctr:44254bc720fd", "", "0.0.0.0:8080", "llm-llamacpp-1")]
+    events += [IpcEvent(wall - (t - j * period), "closed" if j % 2 else "opened", "tcp", "proc:1005", "wan",
+                        fetch[1], "code", "Internet") for j in range(max(0, int(t // period) - 9), int(t // period) + 1)]
     from .ipc import rollup
 
     rollup({n.id: n for n in nodes}, links)
@@ -237,4 +247,4 @@ def demo_ipc(t: float, hostname: str) -> IpcStat:
               "TcpExt.TCPTimeouts": 0.1 * ssh, "Udp.InErrors": 0.0, "Udp.RcvbufErrors": 0.0,
               "conntrack": 812.0, "conntrack_max": 262144.0}
     states = {"ESTAB": 23, "LISTEN": 9, "TIME-WAIT": 41, "CLOSE-WAIT": 1}
-    return IpcStat(nodes, links, counts, "demo data", 0.0, kernel, states)
+    return IpcStat(nodes, links, counts, "demo data", 0.0, kernel, states, events)

@@ -24,7 +24,7 @@ from .boards import Match, identify
 from .history import History
 from .render import panels as P
 from .render.ipc import IpcMap
-from .widgets import BoardView, DetailPanel, GpuPanel, IpcDetail, IpcFilter, IpcView, PanelView
+from .widgets import BoardView, DetailPanel, GpuPanel, IpcDetail, IpcEvents, IpcFilter, IpcView, PanelView
 
 MODES = ["live", "thermal", "off"]
 TABS = [("board", "Board"), ("cpu", "CPU"), ("mem", "Memory"), ("disk", "Storage"), ("net", "Network"),
@@ -71,7 +71,8 @@ class SysTuiApp(App):
     BoardView, PanelView { border: round #3a4658; border-title-color: #8fb8de; border-title-style: bold; }
     BoardView:focus { border: round #39c5ff; }
     #side, #ipc-side { width: 58; }
-    #detail-scroll, #ipc-scroll { height: 1fr; border: round #3a4658; border-title-color: #8fb8de; padding: 0 1; }
+    #detail-scroll, #ipc-scroll, #ipc-ev-scroll { height: 1fr; border: round #3a4658; border-title-color: #8fb8de; padding: 0 1; }
+    #ipc-ev-scroll { height: 14; }
     IpcView:focus { border: round #39c5ff; }
     #ipcmap { height: 3fr; min-height: 14; }
     #ipc-links { height: 2fr; min-height: 6; }
@@ -200,6 +201,8 @@ class SysTuiApp(App):
                     with Vertical(id="ipc-side"):
                         with VerticalScroll(id="ipc-scroll"):
                             yield IpcDetail(id="ipc-detail")
+                        with VerticalScroll(id="ipc-ev-scroll"):
+                            yield IpcEvents(id="ipc-events")
         with Vertical(id="stage"):
             with Horizontal(id="board-top"):
                 yield BoardView(self.match, id="boardview")
@@ -241,6 +244,7 @@ class SysTuiApp(App):
         self.query_one("#sens-scroll").border_title = "hwmon sensors (min / max since start)"
         self._sync_stage()
         self.query_one("#ipc-scroll").border_title = "Node"
+        self.query_one("#ipc-ev-scroll").border_title = "Events"
         table = self.query_one("#procs", DataTable)
         for col in tables.PROC_COLS:
             table.add_column(col, key=col)
@@ -383,6 +387,7 @@ class SysTuiApp(App):
             view.panel.selected, members = None, set()  # the process exited or the container stopped
         sel = view.panel.selected
         self.query_one(IpcDetail).show(ipc, sel, self.history, members)
+        self.query_one(IpcEvents).show(ipc, members)
         table = self.query_one("#ipc-links", DataTable)
         mine = [k for k in ipc.links if k.a in members or k.b in members] if ipc and sel else ipc.links if ipc else []
         nodes = {n.id: n for n in ipc.nodes} if ipc else {}

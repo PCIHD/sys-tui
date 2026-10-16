@@ -377,6 +377,41 @@ class IpcFilter(Input):
         self.app.query_one("#ipc-links").focus()
 
 
+class IpcEvents(Static):
+    """Connections, listeners, guests and peers that came and went, newest first."""
+
+    def show(self, ipc, members: set[str] | None = None, limit: int = 60) -> None:
+        events = list(ipc.events) if ipc is not None else []
+        if members:
+            events = [e for e in events if e.a in members or e.b in members]
+        if not events:
+            self.update(Text("Nothing has opened or closed yet." if not members else
+                             "Nothing came or went for this node yet.", style="dim"))
+            return
+        out = Text()
+        for e in reversed(events[-limit:]):
+            good = e.verb in ("opened", "started", "listening", "new peer")
+            out.append(time.strftime("%H:%M:%S ", time.localtime(e.t)), style="#8a9aad")
+            out.append("+ " if good else "− ", style="bold #3dff7a" if good else "bold #e5383b")
+            if e.kind in ("container", "vm", "peer"):
+                out.append("◆ ", style="#c58cff")
+                out.append(e.name_a, style="bold")
+                out.append(f" {e.verb}" + (f" {e.end}" if e.end and e.end != e.name_a else ""), style="#8a9aad")
+            elif e.kind == "listen":
+                out.append(e.name_a, style="bold")
+                out.append(f" {e.verb} {e.end}", style="#8a9aad")
+            else:
+                out.append(e.name_a, style="bold")
+                out.append(" → ")
+                if e.name_b and e.name_b != e.end.lstrip("[").split("]")[0].rsplit(":", 1)[0]:
+                    out.append(f"{e.name_b} ")
+                out.append(e.end, style="#8a9aad")
+                out.append(f" {e.kind}", style="#4fd1ff" if e.kind == "tcp" else "#5b9bd5")
+            out.append("\n")
+        out.rstrip()
+        self.update(out)
+
+
 class IpcDetail(Static):
     """Everything known about the node selected on the IPC map, tagged live / derived."""
 

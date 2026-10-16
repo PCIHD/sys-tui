@@ -410,6 +410,21 @@ class IpcLink:
 
 
 @dataclass
+class IpcEvent:
+    """Something that appeared or went away between two IPC polls. Names are kept as they were,
+    so a closed connection still reads right after its process has exited."""
+
+    t: float  # epoch seconds
+    verb: str  # opened | closed | listening | stopped listening | started | stopped | new peer
+    kind: str  # tcp | udp | listen | container | vm | peer
+    a: str  # node id
+    b: str = ""
+    end: str = ""  # the far end's ip:port, or the listening address
+    name_a: str = ""
+    name_b: str = ""
+
+
+@dataclass
 class IpcStat:
     nodes: list[IpcNode] = field(default_factory=list)
     links: list[IpcLink] = field(default_factory=list)
@@ -418,6 +433,7 @@ class IpcStat:
     age_s: float = 0.0  # since the last full process walk
     kernel: dict[str, float | None] = field(default_factory=dict)  # netstat counters per second, conntrack
     tcp_states: dict[str, int] = field(default_factory=dict)  # this netns's TCP sockets by state
+    events: list[IpcEvent] = field(default_factory=list)  # oldest first
 
     def node(self, nid: str) -> IpcNode | None:
         return next((n for n in self.nodes if n.id == nid), None)
@@ -511,6 +527,7 @@ def ipc_dict(ipc: IpcStat, keep: int = 100) -> dict:
     d = asdict(ipc)
     d["nodes"] = [asdict(n) for n in nodes]
     d["links"] = [asdict(k) for k in links]
+    d["events"] = [asdict(e) for e in ipc.events[-50:]]
     return d
 
 

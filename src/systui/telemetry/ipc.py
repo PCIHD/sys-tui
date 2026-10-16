@@ -28,10 +28,11 @@ import re
 import socket
 import struct
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from . import IpcLink, IpcNode, IpcStat, Rates, SysFS
+from . import IpcEvent, IpcLink, IpcNode, IpcStat, Rates, SysFS
 from . import netstat, sockdiag
 from .sockdiag import InetSock, UnixSock
 
@@ -41,6 +42,7 @@ HELPERS = ("rootlessport", "pasta", "slirp4netns")  # host-side ends of rootless
 BRIDGES = ("podman", "cni-", "docker", "br-", "virbr", "vnet", "veth", "tap", "lo")  # not the LAN
 EVERY = 3
 STALE_S = 5.0  # a gap this long means the tab was hidden: walk again before showing anything
+EVENTS_KEEP = 300
 API_REFRESH_S = 60.0
 
 
@@ -378,6 +380,10 @@ class IpcTracker:
         self.self_pid = os.getpid()
         self._cmd: dict[int, str] = {}
         self._users: dict[int, str] = {}
+        self.events: deque[IpcEvent] = deque(maxlen=EVENTS_KEEP)
+        self._seen: dict[tuple, tuple] | None = None  # event key → (verb pair, kind, a, b, end, names)
+        self._peers_seen: set[str] = set()
+        self.clock = time.time  # event timestamps
 
     def close(self) -> None:
         if self.rdns is not None:
@@ -386,13 +392,16 @@ class IpcTracker:
     # --------------------------------------------------------------------- polling
     def collect(self, now: float | None = None) -> IpcStat:
         now = time.monotonic() if now is None else now
-        full = self.walk is None or self.n % self.every == 0 or now - self._last > STALE_S
+        fresh = self.walk is None or now - self._last > STALE_S  # nothing to diff events against
+        full = fresh or self.n % self.every == 0
         self.n = 1 if full else self.n + 1
         self._last = now
         inet, note = self._inet()
         if full:
             self.walk = self._full(now, inet)
         stat = self._assemble(self.walk, inet, now)
+        self._diff(stat, fresh)
+        stat.events = list(self.events)
         if note:
             stat.note = "  ·  ".join(x for x in (note, stat.note) if x)
         return stat
@@ -830,6 +839,37 @@ class IpcTracker:
         for k in links:
             counts[k.kind] = counts.get(k.kind, 0) + k.count
         return IpcStat(list(nodes.values()), links, counts, "  ·  ".join(w.notes), now - w.t, kernel, states)
+
+    def _diff(self, stat: IpcStat, fresh: bool) -> None:
+        """Log what appeared and went away since the last poll. Sockets are keyed on their
+        addresses, not on node ids: a new socket's owner is only known after the next full
+        walk, and keying on it would log a fake close and reopen. Unix sockets and pipes are
+        left out; a desktop churns through them constantly."""
+        names = {n.id: n.name for n in stat.nodes}
+        cur: dict[tuple, tuple] = {}
+        for k in stat.links:
+            if k.kind in ("tcp", "udp"):
+                cur[(k.kind, k.a_end, k.b_end)] = (("opened", "closed"), k.kind, k.a, k.b, k.b_end)
+            elif k.kind == "listen":
+                cur[("listen", k.a_end, k.ino)] = (("listening", "stopped listening"), "listen", k.a, "", k.a_end)
+        for n in stat.nodes:
+            if n.kind in ("container", "vm"):
+                cur[(n.kind, n.id)] = (("started", "stopped"), n.kind, n.id, "", "")
+        cur = {key: (*v, names.get(v[2], v[2]), names.get(v[3], v[3])) for key, v in cur.items()}
+        t = self.clock()
+        peers = {n.id: n for n in stat.nodes if n.kind == "peer"}
+        if not fresh and self._seen is not None:
+            for key in cur.keys() - self._seen.keys():
+                (verb, _), kind, a, b, end, na, nb = cur[key]
+                self.events.append(IpcEvent(t, verb, kind, a, b, end, na, nb))
+            for key in self._seen.keys() - cur.keys():
+                (_, verb), kind, a, b, end, na, nb = self._seen[key]
+                self.events.append(IpcEvent(t, verb, kind, a, b, end, na, nb))
+            for nid in peers.keys() - self._peers_seen:
+                n = peers[nid]
+                self.events.append(IpcEvent(t, "new peer", "peer", nid, "", n.addrs[0] if n.addrs else "", n.name))
+        self._seen = cur
+        self._peers_seen |= peers.keys()
 
     def _cgroup(self, n: IpcNode, path: str, rate) -> None:
         """A guest's CPU, memory and limits from its cgroup scope, read every poll."""

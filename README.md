@@ -79,6 +79,14 @@ Below the map, a table lists every channel: kind, both ends with pid and address
 - a LAN peer: MAC, reverse-DNS name and whether it is the gateway
 - this machine: TCP states, the kernel's network error rates (retransmits, resets, listen drops, …) and conntrack use
 
+Under it, an **Events** log lists what came and went, newest first, filtered to the selected node:
+- TCP and UDP connections opening and closing
+- listeners appearing and going away
+- containers and VMs starting and stopping
+- new LAN peers
+
+A node with an event in the last 3 s flashes its accent stripe on the map: green for new, red for gone. Unix sockets and pipes are left out, because a desktop opens and closes them constantly.
+
 Load shows on the map too:
 - A process row is tinted by its CPU, from left to right.
 - A guest tile shows its CPU and memory.
@@ -171,6 +179,7 @@ Board profiles live in `src/gputui/boards/`. See the gputui docstring in that pa
 - **IPC: no byte counts for Unix sockets or pipes.** They show that a channel exists, not how busy it is. TCP has live rates. Inside a container's own netns only the interface totals are known, not per-connection rates.
 - **IPC: other users' fds need root.** Unprivileged, those processes, and capability-protected ones such as the Wayland compositor, show as one `unreadable` row. `./systui-root` sees them, and it also finds rootless containers through `$SUDO_UID`.
 - **IPC: rootless container mapping is ◐.** Traffic leaves rootless containers through `rootlessport` (published ports) and `pasta`/`slirp4netns` (outbound). Those sockets are charged to a container by matching published ports and remote addresses.
+- **IPC: events are sampled.** A connection that opens and closes between two polls (1 s by default) never shows. A new socket is logged once a full walk has found its process, up to 3 polls late.
 - **IPC: no IPv6 neighbours.** LAN peers come from `/proc/net/arp`, which is IPv4. An IPv6 peer appears only while there is a connection to it.
 
 ## Development

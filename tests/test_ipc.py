@@ -479,3 +479,62 @@ def test_detail_rows_show_resources_and_host_health():
     assert "ESTAB" in host["TCP states"] and "retrans" in host["Net errors"] and "of" in host["Conntrack"]
     proc = {r.key: r.value for r in ipc_rows(ipc, "proc:1000")}
     assert "Open fds" in proc and proc["Started"].endswith("ago")
+
+
+# ------------------------------------------------------------------------- events
+def test_events_log_opens_and_closes_once_and_not_on_the_first_poll(root):
+    _proc(root, 100, "curl", {3: "socket:[900]"})
+    a = InetSock(900, "tcp", "192.168.1.10", 51900, "93.184.215.14", 443, "ESTAB", 1000)
+    lst = InetSock(901, "tcp", "0.0.0.0", 8080, "0.0.0.0", 0, "LISTEN", 1000)
+    diag = FakeDiag(inet=[lst])
+    t = tracker(root, diag)
+    t.clock = lambda: 1000.0
+    assert t.collect(0.0).events == []  # everything is new on the first poll: nothing to report
+    diag.inet_socks = [lst, a]
+    _proc(root, 101, "server", {4: "socket:[901]"})
+    for now in (1.0, 2.0, 3.0):  # the 3rd is a full walk: the socket's owner becomes known
+        s = t.collect(now)
+    opened = [e for e in s.events if e.verb == "opened"]
+    assert len(opened) == 1 and opened[0].end == "93.184.215.14:443" and opened[0].kind == "tcp"
+    assert [e.verb for e in s.events if e.kind == "listen"] == []  # it was there from the start
+    diag.inet_socks = [lst]
+    s = t.collect(4.0)
+    closed = [e for e in s.events if e.verb == "closed"]
+    assert len(closed) == 1 and closed[0].name_b == "Internet"
+    s = t.collect(5.0)
+    assert len(s.events) == 2  # nothing changed, and the listener did not flap when its owner became known
+
+
+def test_events_log_guests_listeners_and_new_peers(root):
+    diag = FakeDiag()
+    t = tracker(root, diag)
+    t.collect(0.0)
+    _proc(root, 800, "postgres", cgroup=f"0::/user.slice/libpod-{CTR_A}.scope/container", ns=2)
+    _w(root, "proc/net/arp", "IP address HW type Flags HW address Mask Device\n"
+                             "192.168.1.20 0x1 0x2 68:b9:c2:7e:fd:2e * enp6s0\n")
+    for now in (1.0, 2.0, 3.0):  # the 3rd is a full walk
+        s = t.collect(now)
+    verbs = {(e.verb, e.kind) for e in s.events}
+    assert ("started", "container") in verbs and ("new peer", "peer") in verbs
+    import shutil
+
+    shutil.rmtree(root / "proc/800")
+    for now in (4.0, 5.0, 6.0):
+        s = t.collect(now)
+    assert ("stopped", "container") in {(e.verb, e.kind) for e in s.events}
+
+
+def test_no_events_after_a_pause(root):
+    _proc(root, 100, "curl", {3: "socket:[900]"})
+    diag = FakeDiag()
+    t = tracker(root, diag)
+    t.collect(0.0)
+    diag.inet_socks = [InetSock(900, "tcp", "192.168.1.10", 51900, "93.184.215.14", 443, "ESTAB", 1000)]
+    assert t.collect(60.0).events == []  # the tab was hidden: this is a fresh start, not news
+
+
+def test_demo_has_events_and_ipc_dict_caps_them():
+    ipc = DemoSource().collect().ipc
+    assert any(e.verb == "opened" for e in ipc.events)
+    ipc.events = ipc.events * 40
+    assert len(ipc_dict(ipc)["events"]) == 50

@@ -243,3 +243,19 @@ async def test_ipc_level_key_cycles_which_rows_show():
         await pilot.pause(0.3)
         await pilot.press("i")  # off the IPC tab the key does nothing
         assert view.panel.level == 0
+
+
+@pytest.mark.asyncio
+async def test_ipc_events_panel_lists_and_follows_the_selection():
+    from systui.widgets import IpcEvents, IpcView
+
+    app = SysTuiApp(DemoSource(), interval=0.3, initial_tab="ipc")
+    async with app.run_test(size=(200, 56)) as pilot:
+        await pilot.pause(0.6)
+        ev = app.query_one(IpcEvents)
+        text = str(ev.render())
+        assert "code" in text and "93.184.215.14:443" in text and "llm-llamacpp-1" in text
+        app.query_one(IpcView).select("peer:192.168.1.34")
+        await pilot.pause(0.3)
+        text = str(ev.render())
+        assert "laptop" in text and "93.184.215.14" not in text

@@ -26,6 +26,7 @@ selected; its clients carry a ◆ instead.
 from __future__ import annotations
 
 import math
+import time
 
 from .. import bindings as B
 from ..canvas import Canvas, mix, polyline_points, ramp, shade
@@ -49,6 +50,8 @@ SELECT = 0x39C5FF
 HUB_MIN = 10  # Unix clients that make a process a hub
 STRIP_MIN = 8  # free rows under the peers before the host summary is drawn
 STRIP_ROWS = 9  # its full height, NIC chart included
+PULSE_S = 3.0  # a node with an event this recent flashes its accent: green for new, red for gone
+GOOD = ("opened", "started", "listening", "new peer")
 LEVELS = ("talkers", "talkers + peer IPC", "all processes")
 
 
@@ -347,6 +350,21 @@ class IpcMap(Panel):
         self._arcs(cv, proc_arcs, row_y, lx0, gutter, focus)
         self._arcs(cv, {p: q for p, q in arcs.items() if p[0] in g_y and p[1] in g_y}, g_y, gx0, 3, focus)
 
+        # event pulses, keyed by map id: a process's row, or the guest / peer itself
+        pulse: dict[str, tuple[int, float]] = {}
+        wall = time.time()
+        for e in reversed(ipc.events):
+            age = wall - e.t
+            if age > PULSE_S:
+                break
+            if age < 0:
+                continue
+            col = ch.GREEN if e.verb in GOOD else ch.RED
+            amt = (1 - age / PULSE_S) * (0.6 + 0.4 * math.cos(age * 7))
+            for nid in (e.a, e.b):
+                if nid:
+                    pulse.setdefault(row_of.get(nid, nid), (col, amt))
+
         # tiles
         nlinks: dict[str, int] = {}
         for k in links:
@@ -366,7 +384,7 @@ class IpcMap(Panel):
             elif r.id in hubs:
                 tag = f"hub · {len(clients[r.id])} clients"
             self._row(cv, r, row_y[r.id], lx0, lx1, bool(self.members(r.id) & focus), nlinks.get(r.id, 0),
-                      tag, r.id not in hubs and bool(partners.get(r.id, set()) & hubs))
+                      tag, r.id not in hubs and bool(partners.get(r.id, set()) & hubs), pulse.get(r.id))
         if more:
             yy = row_y["more"]
             n_over = len(more) - n_quiet
@@ -377,11 +395,11 @@ class IpcMap(Panel):
             cv.put_text(lx0 + 1, yy, chip[: list_w - 1], ch.DIM)
         for g in guests:
             if g.id in g_y:
-                self._guest(cv, g, g_y[g.id], gx0, gx1, g.id in focus)
+                self._guest(cv, g, g_y[g.id], gx0, gx1, g.id in focus, pulse.get(g.id))
         if len(g_y) < len(guests):
             cv.put_text(gx0, bottom, f"+{len(guests) - len(g_y)} more guests", ch.DIM)
         for nid, b in p_box.items():
-            self._peer(cv, nodes[nid], b, nid in focus)
+            self._peer(cv, nodes[nid], b, nid in focus, pulse.get(nid))
         if strip is not None and s is not None:
             self._strip(cv, s, h, strip, "host" in focus)
             self.boxes["host#strip"] = strip
@@ -402,7 +420,7 @@ class IpcMap(Panel):
 
     # --------------------------------------------------------------------- pieces
     def _row(self, cv: Canvas, p: IpcNode, y: int, x0: int, x1: int, sel: bool, nlinks: int,
-             tag: str | None = None, hub_client: bool = False) -> None:
+             tag: str | None = None, hub_client: bool = False, pulse: tuple[int, float] | None = None) -> None:
         """One process row. ``tag`` replaces the right-hand text: how the row relates to the
         selection, or a hub's client count. ``hub_client`` adds a ◆ after the name."""
         acc = ACCENT["process"] if p.id != "hidden" else ch.DIM
@@ -412,7 +430,7 @@ class IpcMap(Panel):
             frac = min(1.0, p.cpu / 100)
             cv.fill(x0 + 1, y * 2, x0 + 1 + max(1, round(frac * (x1 - x0 - 1))), y * 2 + 2,
                     mix(bg, ramp(frac, ch.LOAD_STOPS), 0.3))
-        cv.fill(x0, y * 2, x0 + 1, y * 2 + 2, SELECT if sel else acc)
+        cv.fill(x0, y * 2, x0 + 1, y * 2 + 2, SELECT if sel else _pulsed(acc, pulse))
         measured = bool(p.in_bps or p.out_bps) and tag is None
         busy = p.cpu is not None and p.cpu >= 1
         links_txt = f"{nlinks} link{'s' * (nlinks != 1)}"
@@ -429,16 +447,17 @@ class IpcMap(Panel):
         elif room > 0:
             ch.text_right(cv, x1 - 1, y * 2, r, shade(ARC["unix"], 1.6) if tag and not tag.startswith("hub") else ch.DIM)
 
-    def _tile(self, cv: Canvas, box, acc: int, sel: bool) -> None:
+    def _tile(self, cv: Canvas, box, acc: int, sel: bool, pulse: tuple[int, float] | None = None) -> None:
         x0, y0, x1, y1 = box
         cv.fill(x0, y0 * 2, x1, y1 * 2, mix(TILE, acc, 0.24 if sel else 0.12))
-        cv.fill(x0, y0 * 2, x0 + 1, y1 * 2, acc)
+        cv.fill(x0, y0 * 2, x0 + 1, y1 * 2, _pulsed(acc, pulse))
         if sel:
             cv.frame(x0, y0 * 2, x1, y1 * 2, SELECT)
 
-    def _guest(self, cv: Canvas, g: IpcNode, y: int, x0: int, x1: int, sel: bool) -> None:
+    def _guest(self, cv: Canvas, g: IpcNode, y: int, x0: int, x1: int, sel: bool,
+               pulse: tuple[int, float] | None = None) -> None:
         acc = ACCENT[g.kind]
-        self._tile(cv, (x0, y, x1, y + 2), acc, sel)
+        self._tile(cv, (x0, y, x1, y + 2), acc, sel, pulse)
         badge = g.runtime or g.kind
         cv.put_text(x0 + 1, y, badge, TEXT, BADGE.get(badge, 0x3A4658), True)
         res = ""
@@ -457,10 +476,10 @@ class IpcMap(Panel):
         if tail and len(r) + len(tail) + 3 <= x1 - x0:
             ch.text_right(cv, x1 - 1, (y + 1) * 2, tail, SUB)
 
-    def _peer(self, cv: Canvas, n: IpcNode, box, sel: bool) -> None:
+    def _peer(self, cv: Canvas, n: IpcNode, box, sel: bool, pulse: tuple[int, float] | None = None) -> None:
         x0, y0, x1, _ = box
         acc = ACCENT[n.kind]
-        self._tile(cv, box, acc, sel)
+        self._tile(cv, box, acc, sel, pulse)
         name = ("⌂ " if n.router else "") + n.name
         cv.put_text(x0 + 1, y0, name[: x1 - x0 - 2], TEXT, None, True)
         r = rates(n.in_bps, n.out_bps)
@@ -574,6 +593,10 @@ class IpcMap(Panel):
                 if 0 <= j < n:
                     x, y = path[j]
                     cv.blend(x, y, color, 1.0 - tail * 0.35)
+
+
+def _pulsed(acc: int, pulse: tuple[int, float] | None) -> int:
+    return mix(acc, pulse[0], max(0.0, min(1.0, pulse[1]))) if pulse else acc
 
 
 def _rank(slot: str, g_y: dict) -> int:

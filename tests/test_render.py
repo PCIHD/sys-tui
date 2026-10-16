@@ -403,3 +403,25 @@ def test_ipc_map_guest_tiles_show_cpu_and_memory():
 
     assert "70M" in _text(cv)  # llm-litellm-db-1's memory.current
     assert re.search(r"\d{3}% 9G", _text(cv))  # llama.cpp: more than one thread's worth of CPU
+
+
+def test_ipc_map_flashes_nodes_with_fresh_events():
+    import time
+
+    from systui.render.ipc import ACCENT, IpcMap
+    from systui.telemetry import IpcEvent, IpcLink, IpcNode, IpcStat, SystemSnapshot
+
+    nodes = [IpcNode("host", "host", "box"), IpcNode("wan", "wan", "Internet"),
+             IpcNode("proc:1", "process", "curl", pids=[1], in_bps=10.0)]
+    links = [IpcLink("proc:1", "wan", "tcp", in_bps=10.0)]
+
+    def accent(events):
+        m = IpcMap()
+        cv = m.canvas(120, 30)
+        m.draw(cv, SystemSnapshot(t=0.0, ipc=IpcStat(nodes, links, {}, events=events)), History(), 0.0)
+        x0, y0, _, _ = m.boxes["proc:1"]
+        return cv.get(x0, y0 * 2)
+
+    assert accent([]) == ACCENT["process"]
+    assert accent([IpcEvent(time.time() - 10, "opened", "tcp", "proc:1", "wan")]) == ACCENT["process"]
+    assert accent([IpcEvent(time.time(), "opened", "tcp", "proc:1", "wan")]) != ACCENT["process"]
