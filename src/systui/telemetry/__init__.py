@@ -381,6 +381,8 @@ class IpcNode:
     mem_limit: int | None = None  # cgroup memory.max
     cpu_limit: float | None = None  # cgroup cpu.max, in cores
     pids_n: int | None = None  # cgroup pids.current
+    shm_n: int | None = None  # shared-memory segments it holds with another process
+    shm_bytes: int | None = None  # their total size, where known
     res_prov: str = "live"  # derived when a guest's figures are summed from its PIDs
 
 
@@ -392,7 +394,7 @@ class IpcLink:
 
     a: str
     b: str  # "" for kind == "listen"
-    kind: str  # pipe | unix | tcp | udp | listen
+    kind: str  # pipe | unix | shm | tcp | udp | listen
     a_end: str = ""  # "ip:port", or the Unix path on the b side
     b_end: str = ""
     pid_a: int | None = None

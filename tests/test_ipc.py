@@ -538,3 +538,78 @@ def test_demo_has_events_and_ipc_dict_caps_them():
     assert any(e.verb == "opened" for e in ipc.events)
     ipc.events = ipc.events * 40
     assert len(ipc_dict(ipc)["events"]) == 50
+
+
+# ------------------------------------------------------------------------- shared memory
+def test_shared_memory_from_fds_maps_and_sysv(root):
+    memfd = "/memfd:pipewire-memfd:flags=0x0000000f,type=2,size=2312 (deleted)"
+    _proc(root, 100, "pipewire", {29: memfd})
+    _proc(root, 101, "firefox", {40: memfd})
+    _proc(root, 102, "plasmashell")
+    _proc(root, 103, "Xwayland")
+    _proc(root, 104, "kwin")
+    # 102 only has the segment mapped (fd already closed); 103 and 104 share a SysV segment
+    _w(root, "proc/102/maps", f"7f97-7f98 rw-s 00000000 00:01 5493                       {memfd}\n"
+                              "7f99-7f9a r-xp 00000000 00:1f 123                        /usr/lib64/libc.so.6\n")
+    _w(root, "proc/103/maps", "7f00-7f01 rw-s 00000000 00:01 6                         /SYSV00000000 (deleted)\n")
+    _w(root, "proc/104/maps", "7f00-7f01 rw-s 00000000 00:01 6                         /SYSV00000000 (deleted)\n")
+    _w(root, "proc/sysvipc/shm", "       key      shmid perms     size  cpid  lpid nattch   uid\n"
+                                 "         0          6  1606 10828800   104   103      2  1000\n")
+
+    class St:
+        st_dev, st_ino, st_size = os.makedev(0, 1), 5493, 2312
+
+    t = tracker(root, FakeDiag())
+    t.stat = lambda path: St
+    s = t.collect(0.0)
+    pw = link(s, "shm", b="proc:100")  # the lowest PID anchors a memfd
+    assert {k.a for k in pw} == {"proc:101", "proc:102"} and pw[0].b_end == "pipewire-memfd"
+    sysv = link(s, "shm", b="proc:104")  # the SysV creator anchors its segment
+    assert [k.a for k in sysv] == ["proc:103"] and sysv[0].b_end == "SysV #6"
+    assert s.counts["shm"] == 3
+    assert s.node("proc:100").shm_n == 1 and s.node("proc:100").shm_bytes == 2312
+    assert s.node("proc:103").shm_bytes == 10828800
+
+
+def test_a_segment_held_by_one_process_is_not_a_link(root):
+    _proc(root, 100, "alone")
+    _w(root, "proc/100/maps", "7f00-7f01 rw-s 00000000 00:01 77                        /dev/shm/mine\n")
+    s = tracker(root, FakeDiag()).collect(0.0)
+    assert link(s, "shm") == [] and s.node("proc:100") is None
+
+
+def test_maps_are_reread_round_robin_after_a_fresh_start(root):
+    for pid in (300, 301, 302):
+        _proc(root, pid, f"p{pid}")
+        _w(root, f"proc/{pid}/maps", "7f00-7f01 rw-s 00000000 00:01 9                         /dev/shm/x\n")
+    t = tracker(root, FakeDiag())
+    reads = []
+    real = open
+
+    def spy(path, *a, **kw):
+        if str(path).endswith("/maps"):
+            reads.append(int(str(path).split("/")[-2]))
+        return real(path, *a, **kw)
+
+    import builtins
+
+    builtins.open = spy
+    try:
+        t.collect(0.0)  # fresh: every process
+        assert sorted(reads) == [300, 301, 302]
+        reads.clear()
+        for now in (1.0, 2.0, 3.0):  # the next full walk: a third of them
+            s = t.collect(now)
+        assert len(reads) == 1
+    finally:
+        builtins.open = real
+    assert len(link(s, "shm")) == 2  # the cache stands in for the other two
+
+
+def test_shm_name_and_parsers():
+    assert I.shm_name("/memfd:pipewire-memfd:flags=0xf,type=2 (deleted)") == ("memfd", "pipewire-memfd")
+    assert I.shm_name("/dev/shm/u1000-ValveIPCSharedObj-Steam") == ("posix", "/dev/shm/u1000-ValveIPCSharedObj-Steam")
+    assert I.shm_name("/SYSV0000abcd (deleted)")[0] == "sysv"
+    segs = I.parse_maps_shm(b"7f-80 rw-s 00000000 00:01 5 /memfd:a (deleted)\n7f-80 rw-s 00000000 00:01 5 /memfd:a (deleted)\n")
+    assert segs == [(os.makedev(0, 1), 5, "/memfd:a (deleted)")]  # one entry per segment
+    assert I.parse_sysvipc("key shmid perms size cpid\n 0 6 1606 4096 104 103 2\n") == {6: (0, 4096, 104)}

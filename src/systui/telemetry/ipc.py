@@ -43,6 +43,8 @@ BRIDGES = ("podman", "cni-", "docker", "br-", "virbr", "vnet", "veth", "tap", "l
 EVERY = 3
 STALE_S = 5.0  # a gap this long means the tab was hidden: walk again before showing anything
 EVENTS_KEEP = 300
+SHM_EVERY = 3  # /proc/<pid>/maps is big: each full walk re-reads a third of them, round-robin
+SHM_MARKS = (b"memfd:", b"/dev/shm/", b"/SYSV")
 API_REFRESH_S = 60.0
 
 
@@ -179,6 +181,47 @@ def parse_cpu_max(text: str | None) -> float | None:
         return int(f[0]) / int(f[1]) if len(f) == 2 and f[0] != "max" else None
     except (ValueError, ZeroDivisionError):
         return None
+
+
+def shm_name(path: str) -> tuple[str, str]:
+    """(kind, name) of a shared segment's path: ``memfd``, ``posix`` (/dev/shm) or ``sysv``."""
+    p = path.removesuffix(" (deleted)")
+    if p.startswith("/memfd:"):
+        return "memfd", p[7:].split(":", 1)[0] or "memfd"
+    if p.startswith("/SYSV"):
+        return "sysv", "SysV"
+    return "posix", p
+
+
+def parse_maps_shm(text: bytes) -> list[tuple[int, int, str]]:
+    """Shared segments mapped by a process: ``(dev, ino, path)`` per distinct segment. The device
+    and inode give identity even after the process closed the fd it mapped."""
+    out: dict[tuple[int, int], str] = {}
+    for line in text.splitlines():
+        if not any(m in line for m in SHM_MARKS):
+            continue
+        f = line.decode(errors="replace").split(maxsplit=5)
+        if len(f) < 6:
+            continue
+        try:
+            maj, mn = f[3].split(":")
+            key = (os.makedev(int(maj, 16), int(mn, 16)), int(f[4]))
+        except ValueError:
+            continue
+        out.setdefault(key, f[5])
+    return [(dev, ino, path) for (dev, ino), path in out.items()]
+
+
+def parse_sysvipc(text: str) -> dict[int, tuple[int, int, int]]:
+    """``/proc/sysvipc/shm`` → shmid → (key, size, creator pid)."""
+    out: dict[int, tuple[int, int, int]] = {}
+    for line in text.splitlines()[1:]:
+        f = line.split()
+        try:
+            out[int(f[1])] = (int(f[0]), int(f[3]), int(f[4]))
+        except (IndexError, ValueError):
+            continue
+    return out
 
 
 def qemu_name(argv: list[str]) -> str:
@@ -326,6 +369,15 @@ class _Guest:
 
 
 @dataclass
+class _Shm:
+    kind: str  # memfd | posix | sysv
+    name: str
+    size: int | None = None
+    pids: set[int] = field(default_factory=set)
+    creator: int | None = None  # SysV cpid
+
+
+@dataclass
 class _Walk:
     t: float
     procs: dict[int, _Proc]
@@ -341,6 +393,7 @@ class _Walk:
     gateways: set[str]
     unowned: set[int]  # inet inodes without a readable owner at walk time
     notes: list[str]
+    shm: dict[tuple[int, int], _Shm] = field(default_factory=dict)  # (dev, ino) → segment
 
 
 def _read(path: str) -> str:
@@ -384,6 +437,9 @@ class IpcTracker:
         self._seen: dict[tuple, tuple] | None = None  # event key → (verb pair, kind, a, b, end, names)
         self._peers_seen: set[str] = set()
         self.clock = time.time  # event timestamps
+        self.stat = os.stat  # shared-memory fds: their (dev, ino) and size
+        self._maps: dict[int, list[tuple[int, int, str]]] = {}  # pid → mapped shared segments
+        self._fulls = 0
 
     def close(self) -> None:
         if self.rdns is not None:
@@ -398,7 +454,7 @@ class IpcTracker:
         self._last = now
         inet, note = self._inet()
         if full:
-            self.walk = self._full(now, inet)
+            self.walk = self._full(now, inet, fresh)
         stat = self._assemble(self.walk, inet, now)
         self._diff(stat, fresh)
         stat.events = list(self.events)
@@ -415,8 +471,8 @@ class IpcTracker:
                 out += sockdiag.proc_inet(self.fs.read(f"proc/net/{name}") or "", name[:3])
             return out, "no sock_diag: TCP rates unavailable"
 
-    def _full(self, now: float, inet: list[InetSock]) -> _Walk:
-        procs, socks, pipes, hidden = self._walk_procs()
+    def _full(self, now: float, inet: list[InetSock], fresh: bool = True) -> _Walk:
+        procs, socks, pipes, hidden, shm = self._walk_procs()
         notes = []
         try:
             unix = self.diag.unix()
@@ -439,19 +495,53 @@ class IpcTracker:
         alive = set(procs)
         for k in [k for k in self._cmd if k not in alive]:
             del self._cmd[k]
+        self._shm_maps(procs, shm, fresh)
         return _Walk(now, procs, socks, pipes, hidden, unix, guests, pid_guest, own, nets,
                      parse_arp(self.fs.read("proc/net/arp") or ""), default_gateways(self.fs.read("proc/net/route") or ""),
-                     unowned, notes)
+                     unowned, notes, shm)
+
+    def _shm_maps(self, procs: dict[int, _Proc], shm: dict[tuple[int, int], _Shm], fresh: bool) -> None:
+        """Add the segments each process has mapped, and SysV names and sizes. Reading every
+        process's maps costs about 60 ms here, so after a fresh start each full walk re-reads
+        only a third of them (by PID), and the cache stands in for the rest."""
+        self._maps = {pid: v for pid, v in self._maps.items() if pid in procs}
+        slot = self._fulls % SHM_EVERY
+        self._fulls += 1
+        for pid in procs:
+            if not fresh and pid % SHM_EVERY != slot:
+                continue
+            try:
+                with open(f"{self.fs.p('proc')}/{pid}/maps", "rb") as f:
+                    segs = parse_maps_shm(f.read())
+            except OSError:
+                segs = []
+            if segs:
+                self._maps[pid] = segs
+            else:
+                self._maps.pop(pid, None)
+        sysv = parse_sysvipc(self.fs.read("proc/sysvipc/shm") or "")
+        for pid, segs in self._maps.items():
+            for dev, ino, path in segs:
+                seg = shm.get((dev, ino))
+                if seg is None:
+                    kind, name = shm_name(path)
+                    seg = shm[(dev, ino)] = _Shm(kind, name)
+                seg.pids.add(pid)
+        for (dev, ino), seg in shm.items():
+            if seg.kind == "sysv" and ino in sysv:
+                key, seg.size, seg.creator = sysv[ino]
+                seg.name = f"SysV #{ino}" + (f" key {key:#x}" if key else "")
 
     def _walk_procs(self):
         procs: dict[int, _Proc] = {}
         socks: dict[int, list[int]] = {}
         holders: dict[int, list[tuple[int, str]]] = {}
+        shm: dict[tuple[int, int], _Shm] = {}
         hidden = 0
         try:
             it = os.scandir(self.fs.p("proc"))
         except OSError:
-            return procs, socks, {}, 0
+            return procs, socks, {}, 0, {}
         with it:
             for e in it:
                 if not e.name.isdigit():
@@ -493,6 +583,15 @@ class IpcTracker:
                             holders.setdefault(int(t[6:-1]), []).append((pid, f.name))
                         elif t == "/dev/net/tun":
                             tun.append(f.name)
+                        elif t.startswith(("/memfd:", "/dev/shm/")):
+                            try:
+                                st = self.stat(f.path)
+                            except OSError:
+                                continue
+                            seg = shm.get((st.st_dev, st.st_ino))
+                            if seg is None:
+                                seg = shm[(st.st_dev, st.st_ino)] = _Shm(*shm_name(t), size=st.st_size)
+                            seg.pids.add(pid)
                 for fd in tun:
                     for line in _read(f"{base}/fdinfo/{fd}").splitlines():
                         if line.startswith("iff:"):
@@ -516,7 +615,7 @@ class IpcTracker:
                 if mode in (0, 2):
                     r.add(pid)
             pipes[ino] = (w, r)
-        return procs, socks, pipes, hidden
+        return procs, socks, pipes, hidden, shm
 
     def _containers(self) -> dict[str, CtrMeta]:
         out: dict[str, CtrMeta] = {}
@@ -724,6 +823,24 @@ class IpcTracker:
             a, b = pnode(pw), pnode(pr)
             if a != b:
                 fold(a, b, "pipe", pw, pr, "", "", ino)
+        # ---- shared memory: a star from each holder to one anchor, the SysV creator or the lowest
+        # PID, so a segment held by K processes is K-1 links, not K²
+        shm_n: dict[str, int] = {}
+        shm_b: dict[str, int] = {}
+        for (_dev, ino), seg in w.shm.items():
+            if len(seg.pids) < 2:
+                continue
+            anchor = seg.creator if seg.creator in seg.pids else min(seg.pids)
+            b = pnode(anchor)
+            for pid in sorted(seg.pids - {anchor}):
+                a = pnode(pid)
+                if a != b:
+                    fold(a, b, "shm", pid, anchor, seg.name, "", ino)
+            for nid in {pnode(p) for p in seg.pids}:
+                shm_n[nid] = shm_n.get(nid, 0) + 1
+                shm_b[nid] = shm_b.get(nid, 0) + (seg.size or 0)
+        for nid, n_seg in shm_n.items():
+            nodes[nid].shm_n, nodes[nid].shm_bytes = n_seg, shm_b[nid] or None
         links += agg.values()
 
         # ---- TCP / UDP in this netns

@@ -45,7 +45,7 @@ ACCENT = {"process": 0x8FB8DE, "container": 0x5B9BD5, "vm": 0xC58CFF, "peer": 0x
           "host": 0x39C5FF}
 BADGE = {"podman": 0x8F6BD6, "docker": 0x2496ED, "distrobox": 0xE87A3C, "toolbox": 0xD6A33C, "lxc": 0x6BB86B,
          "qemu": 0xFF6B5A, "vm": 0xFF6B5A, "nspawn": 0x6BB8B0}
-ARC = {"unix": 0x7A6BB8, "pipe": 0x4E9A6A, "tcp": 0x4F7FA8, "udp": 0x4F7FA8}
+ARC = {"unix": 0x7A6BB8, "pipe": 0x4E9A6A, "shm": 0x3FB8AF, "tcp": 0x4F7FA8, "udp": 0x4F7FA8}
 SELECT = 0x39C5FF
 HUB_MIN = 10  # Unix clients that make a process a hub
 STRIP_MIN = 8  # free rows under the peers before the host summary is drawn
@@ -157,7 +157,7 @@ class IpcMap(Panel):
                 if ra != rb:
                     partners.setdefault(ra, set()).add(rb)
                     partners.setdefault(rb, set()).add(ra)
-                    if k.kind == "unix":
+                    if k.kind in ("unix", "shm"):  # b is the server, or the segment's anchor
                         clients.setdefault(rb, set()).add(ra)
             elif (ra or rb) and "host" not in (k.a, k.b):
                 netted.add(ra or rb)
@@ -409,11 +409,15 @@ class IpcMap(Panel):
         # header and footer
         c = ipc.counts
         head = (f"{c.get('tcp', 0)} tcp · {c.get('udp', 0)} udp · {c.get('unix', 0)} unix · {c.get('pipe', 0)} pipe"
-                f" · {c.get('listen', 0)} listening · {len(guests)} guests · {len(peers)} LAN peers")
+                f" · {c.get('shm', 0)} shm · {c.get('listen', 0)} listening · {len(guests)} guests"
+                f" · {len(peers)} LAN peers")
         cv.put_text(1, 0, head[: W - 2], 0xC9D1D9, None, True)
-        legend = "▲ towards this machine ▼ away (B/s)  ━ unix ━ pipe"
+        legend = "▲ towards this machine ▼ away (B/s)  ━ unix ━ pipe ━ shm"
         if len(head) + len(legend) + 4 <= W:
             ch.text_right(cv, W - 1, 0, legend, ch.DIM)
+            x_leg = W - 1 - len(legend)
+            for kind in ("unix", "pipe", "shm"):
+                cv.put_text(x_leg + legend.index(f"━ {kind}"), 0, "━", shade(ARC[kind], 1.4))
         foot = "  ·  ".join(x for x in (f"i: {LEVELS[self.level]}", self.status,
                                          ipc.note or "click a node · Tab cycles") if x)
         cv.put_text(1, Hc - 1, foot[: W - 2], ch.DIM)

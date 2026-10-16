@@ -187,6 +187,8 @@ def demo_ipc(t: float, hostname: str) -> IpcStat:
         IpcLink("proc:1005", "proc:1002", "unix", "", "/run/user/1000/wayland-0", 1005, 1002, "ESTAB"),
         *[IpcLink(f"proc:{pid}", "proc:1100", "unix", "", "/run/user/1000/bus", pid, 1100, "ESTAB")
           for pid in (1000, 1002, 1004, 1005)],
+        IpcLink("proc:1000", "proc:1004", "shm", "", "pipewire-memfd", 1000, 1004, count=4),
+        IpcLink("proc:1003", "proc:1002", "shm", "", "SysV #6", 1003, 1002),
         IpcLink("proc:1005", "proc:1001", "pipe", "", "", 1005, 1001, count=2),
         IpcLink("proc:1001", "proc:1005", "pipe", "", "", 1001, 1005),
         tcp("proc:1001", "ctr:44254bc720fd", "127.0.0.1:41234", "127.0.0.1:8080", 1001, 2e3 + 2.4e6 * llm,
@@ -226,8 +228,10 @@ def demo_ipc(t: float, hostname: str) -> IpcStat:
     res = {"firefox": (38 * web + 4, 2.1e9, 112, 160), "python3": (90 * llm + 2, 6.4e8, 14, 23),
            "gnome-shell": (6.0, 3.1e8, 31, 88), "Xwayland": (2.0, 1.2e8, 9, 40), "pipewire": (1.5, 3.0e7, 4, 61),
            "code": (12 * ssh + 3, 1.4e9, 46, 210), "dbus-broker": (0.2, 6e6, 1, 70), "sshd": (0.4, 9e6, 1, 12)}
+    shm = {"firefox": (4, 2.0e5), "pipewire": (4, 2.0e5), "Xwayland": (1, 1.08e7), "gnome-shell": (1, 1.08e7)}
     for k, n in enumerate(x for x in nodes if x.kind == "process"):
         n.cpu, n.rss, n.threads, n.fds = res[n.name]
+        n.shm_n, n.shm_bytes = shm.get(n.name, (None, None))
         n.started, n.unit = wall - 3600 * (k + 1) - 427, f"app-{n.name}-{n.pids[0]}.scope"
     guest_res = {"ctr:df517a104788": (3 + 40 * llm, 7.3e7, 2 * 2**30, None, 10, 25 * 3600),
                  "ctr:44254bc720fd": (100 + 700 * llm, 9.6e9, None, 8.0, 46, 3 * 3600),

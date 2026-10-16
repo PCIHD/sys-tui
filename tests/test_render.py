@@ -425,3 +425,13 @@ def test_ipc_map_flashes_nodes_with_fresh_events():
     assert accent([]) == ACCENT["process"]
     assert accent([IpcEvent(time.time() - 10, "opened", "tcp", "proc:1", "wan")]) == ACCENT["process"]
     assert accent([IpcEvent(time.time(), "opened", "tcp", "proc:1", "wan")]) != ACCENT["process"]
+
+
+def test_ipc_detail_and_table_know_shared_memory():
+    from systui.tables import ipc_filter, ipc_rows
+
+    ipc = SNAP.ipc
+    rows = {r.key: r.value for r in ipc_rows(ipc, "proc:1004")}
+    assert rows["Shared memory"].startswith("4 segments") and "shm" in rows["Links"]
+    nodes = {n.id: n for n in ipc.nodes}
+    assert {k.b_end for k in ipc_filter(ipc.links, nodes, ("shm",))} == {"pipewire-memfd", "SysV #6"}

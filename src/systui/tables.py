@@ -94,8 +94,9 @@ def sensors_table(s: SystemSnapshot | None, h: History) -> Table:
 
 # ------------------------------------------------------------------------- IPC
 IPC_COLS = ("Kind", "From", "To", "State", "▲ in", "▼ out", "")
-IPC_KIND_STYLE = {"tcp": "#4fd1ff", "udp": "#5b9bd5", "unix": "#a78bfa", "pipe": "#3ddc84", "listen": "#8a9aad"}
-KIND_ORDER = {"tcp": 0, "udp": 1, "unix": 2, "pipe": 3, "listen": 4}
+IPC_KIND_STYLE = {"tcp": "#4fd1ff", "udp": "#5b9bd5", "unix": "#a78bfa", "pipe": "#3ddc84", "shm": "#3fb8af",
+                  "listen": "#8a9aad"}
+KIND_ORDER = {"tcp": 0, "udp": 1, "unix": 2, "pipe": 3, "shm": 4, "listen": 5}
 
 
 def ipc_widths(total: int) -> list[int]:
@@ -196,6 +197,9 @@ def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str]
         if n.cmd:
             out.append(Row("Command", n.cmd[:160], LIVE))
         out += _resources(n)
+        if n.shm_n:
+            size = f" · {human_bytes(n.shm_bytes)}" if n.shm_bytes else ""
+            out.append(Row("Shared memory", f"{n.shm_n} segment{'s' * (n.shm_n != 1)}{size}", LIVE))
     elif n.kind in ("container", "vm"):
         out.append(Row("Runtime", n.runtime or n.kind, LIVE))
         if n.sub:
