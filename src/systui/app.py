@@ -394,8 +394,8 @@ class SysTuiApp(App):
         kinds = tables.KIND_FILTERS[self._ipc_kind]
         text = self.query_one(IpcFilter).value.strip()
         mine = tables.ipc_filter(mine, nodes, kinds, text)
-        status = " ".join(x for x in (f"f: {'+'.join(kinds) if kinds else 'all kinds'}",
-                                      f"/ “{text}”" if text else "/ filter", "Enter → process") if x)
+        status = " · ".join((f"f: {'+'.join(kinds) if kinds else 'all kinds'}",
+                             f"/ “{text}”" if text else "/ filter", "Enter → process"))
         if view.panel.status != status:
             view.panel.status = status
             view.redraw()
