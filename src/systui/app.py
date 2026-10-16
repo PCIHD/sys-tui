@@ -16,7 +16,7 @@ from textual import work
 from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import DataTable, Footer, Sparkline, Static, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Input, Sparkline, Static, TabbedContent, TabPane
 
 from . import bindings as B
 from . import tables
@@ -24,7 +24,7 @@ from .boards import Match, identify
 from .history import History
 from .render import panels as P
 from .render.ipc import IpcMap
-from .widgets import BoardView, DetailPanel, GpuPanel, IpcDetail, IpcView, PanelView
+from .widgets import BoardView, DetailPanel, GpuPanel, IpcDetail, IpcEvents, IpcFilter, IpcView, PanelView
 
 MODES = ["live", "thermal", "off"]
 TABS = [("board", "Board"), ("cpu", "CPU"), ("mem", "Memory"), ("disk", "Storage"), ("net", "Network"),
@@ -71,10 +71,12 @@ class SysTuiApp(App):
     BoardView, PanelView { border: round #3a4658; border-title-color: #8fb8de; border-title-style: bold; }
     BoardView:focus { border: round #39c5ff; }
     #side, #ipc-side { width: 58; }
-    #detail-scroll, #ipc-scroll { height: 1fr; border: round #3a4658; border-title-color: #8fb8de; padding: 0 1; }
+    #detail-scroll, #ipc-scroll, #ipc-ev-scroll { height: 1fr; border: round #3a4658; border-title-color: #8fb8de; padding: 0 1; }
+    #ipc-ev-scroll { height: 14; }
     IpcView:focus { border: round #39c5ff; }
     #ipcmap { height: 3fr; min-height: 14; }
     #ipc-links { height: 2fr; min-height: 6; }
+    #ipc-filter { display: none; }
     #gpu { height: auto; border: round #3a4658; border-title-color: #8fb8de; padding: 0 1; }
     #overview { height: 18; }
     #overview.hidden, #gpu-hist.hidden, #gpu-tabs.hidden { display: none; }
@@ -116,6 +118,9 @@ class SysTuiApp(App):
         Binding("left_square_bracket", "step(-1)", show=False),
         Binding("right_square_bracket", "step(1)", show=False),
         Binding("d", "cpu_die", "CPU die"),
+        Binding("i", "ipc_level", "Rows", show=False),
+        Binding("f", "ipc_kind", "Kinds", show=False),
+        Binding("slash", "ipc_filter", "Filter", show=False),
     ]
 
     def __init__(self, source, interval: float = 1.0, force_board: str | None = None, gputui: str | None = None,
@@ -145,6 +150,8 @@ class SysTuiApp(App):
         self._pending_tab: str | None = None  # a system tab asked for from GPU mode, opened once back on the board
         self._ipc_links: list = []  # rows of #ipc-links, in order
         self._ipc_table_w = -1  # #ipc-links width its columns were sized for
+        self._ipc_kind = 0  # index into tables.KIND_FILTERS
+        self._proc_pid: int | None = None  # put the Processes cursor on this PID at its next refresh
 
     # --------------------------------------------------------------------- layout
     def compose(self) -> ComposeResult:
@@ -188,10 +195,14 @@ class SysTuiApp(App):
                 with Horizontal():
                     with Vertical():
                         yield IpcView(IpcMap(), h, id="ipcmap")
+                        yield IpcFilter(placeholder="filter links by name, PID, port or path  ·  Esc clears",
+                                        id="ipc-filter")
                         yield DataTable(id="ipc-links", zebra_stripes=True, cursor_type="row")
                     with Vertical(id="ipc-side"):
                         with VerticalScroll(id="ipc-scroll"):
                             yield IpcDetail(id="ipc-detail")
+                        with VerticalScroll(id="ipc-ev-scroll"):
+                            yield IpcEvents(id="ipc-events")
         with Vertical(id="stage"):
             with Horizontal(id="board-top"):
                 yield BoardView(self.match, id="boardview")
@@ -233,6 +244,7 @@ class SysTuiApp(App):
         self.query_one("#sens-scroll").border_title = "hwmon sensors (min / max since start)"
         self._sync_stage()
         self.query_one("#ipc-scroll").border_title = "Node"
+        self.query_one("#ipc-ev-scroll").border_title = "Events"
         table = self.query_one("#procs", DataTable)
         for col in tables.PROC_COLS:
             table.add_column(col, key=col)
@@ -344,6 +356,13 @@ class SysTuiApp(App):
             if hit:
                 procs = hit
         row = table.cursor_row
+        if self._proc_pid is not None:
+            pid, self._proc_pid = self._proc_pid, None
+            at = next((i for i, p in enumerate(procs) if p.pid == pid), None)
+            if at is None:
+                self.notify(f"PID {pid} is not among the {len(procs)} busiest processes listed", severity="warning")
+            else:
+                row = at
         table.clear()
         threads = self.snapshot.cpu.threads
         for p in procs:
@@ -368,10 +387,19 @@ class SysTuiApp(App):
             view.panel.selected, members = None, set()  # the process exited or the container stopped
         sel = view.panel.selected
         self.query_one(IpcDetail).show(ipc, sel, self.history, members)
+        self.query_one(IpcEvents).show(ipc, members)
         table = self.query_one("#ipc-links", DataTable)
         mine = [k for k in ipc.links if k.a in members or k.b in members] if ipc and sel else ipc.links if ipc else []
-        links = tables.ipc_sorted(mine)[:IPC_ROWS]
         nodes = {n.id: n for n in ipc.nodes} if ipc else {}
+        kinds = tables.KIND_FILTERS[self._ipc_kind]
+        text = self.query_one(IpcFilter).value.strip()
+        mine = tables.ipc_filter(mine, nodes, kinds, text)
+        status = " · ".join((f"f: {'+'.join(kinds) if kinds else 'all kinds'}",
+                             f"/ “{text}”" if text else "/ filter", "Enter → process"))
+        if view.panel.status != status:
+            view.panel.status = status
+            view.redraw()
+        links = tables.ipc_sorted(mine)[:IPC_ROWS]
         row = table.cursor_row
         if table.size.width != self._ipc_table_w:
             # fixed widths: auto-sized columns only ever grow, and a long Unix path once would
@@ -389,6 +417,46 @@ class SysTuiApp(App):
 
     def on_ipc_view_selected(self, event: IpcView.Selected) -> None:
         self._refresh_ipc()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "ipc-filter":
+            self._refresh_ipc()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action.startswith("ipc_"):
+            return self.query_one("#tabs", TabbedContent).active == "ipc"
+        return True
+
+    def action_ipc_level(self) -> None:
+        from .render.ipc import LEVELS
+
+        view = self.query_one(IpcView)
+        view.panel.level = (view.panel.level + 1) % len(LEVELS)
+        view.redraw()
+
+    def action_ipc_kind(self) -> None:
+        self._ipc_kind = (self._ipc_kind + 1) % len(tables.KIND_FILTERS)
+        self._refresh_ipc()
+
+    def action_ipc_filter(self) -> None:
+        box = self.query_one(IpcFilter)
+        box.display = True
+        box.focus()
+
+    def action_ipc_jump(self) -> None:
+        """Enter on the map: show the selected node's busiest process on the Processes tab."""
+        view = self.query_one(IpcView)
+        ipc = self.snapshot.ipc
+        pids = [p for m in view.panel.members(view.panel.selected) if ipc and (n := ipc.node(m)) for p in n.pids]
+        if not pids:
+            self.notify("select a process on the map first", severity="warning")
+            return
+        cpu = {p.pid: p.cpu for p in self.snapshot.procs}
+        self._proc_pid = max(pids, key=lambda p: (cpu.get(p, -1.0), -p))
+        self.part_filter = None
+        self.set_focus(None)  # TabbedContent follows focus: the map would pull it straight back
+        self.action_tab("proc")
+        self.call_after_refresh(self.query_one("#procs", DataTable).focus)
 
     def on_board_view_selected(self, event: BoardView.Selected) -> None:
         self.part_filter = event.cid

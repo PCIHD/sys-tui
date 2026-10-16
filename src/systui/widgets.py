@@ -12,7 +12,7 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from . import bindings as B
 from .boards import Match
@@ -322,6 +322,7 @@ class IpcView(PanelView, can_focus=True):
     BINDINGS = [
         Binding("tab", "cycle(1)", "Next node", show=False),
         Binding("shift+tab", "cycle(-1)", show=False),
+        Binding("enter", "app.ipc_jump", "To process", show=False),
     ]
 
     class Selected(Message):
@@ -332,7 +333,7 @@ class IpcView(PanelView, can_focus=True):
     def node_at(self, x: int, y: int) -> str | None:
         for nid, (x0, y0, x1, y1) in getattr(self.panel, "boxes", {}).items():
             if x0 <= x < x1 and y0 <= y < y1:
-                return nid
+                return nid.split("#")[0]  # "host#strip": a second box for the same node
         return None
 
     def select(self, nid: str | None) -> None:
@@ -342,7 +343,7 @@ class IpcView(PanelView, can_focus=True):
         self.post_message(self.Selected(nid))
 
     def action_cycle(self, step: int) -> None:
-        order = list(getattr(self.panel, "boxes", {}))
+        order = list(dict.fromkeys(nid.split("#")[0] for nid in getattr(self.panel, "boxes", {})))
         if not order:
             return
         i = order.index(self.panel.selected) if self.panel.selected in order else -1
@@ -363,6 +364,52 @@ class IpcView(PanelView, can_focus=True):
 
             n = ipc_node(ipc, nid, self.panel.members(nid))
         self.tooltip = f"{n.name} — {n.runtime or n.kind}" if n else None
+
+
+class IpcFilter(Input):
+    """Text filter over the IPC links table. Escape clears it and gives focus back."""
+
+    BINDINGS = [Binding("escape", "close", show=False)]
+
+    def action_close(self) -> None:
+        self.value = ""
+        self.display = False
+        self.app.query_one("#ipc-links").focus()
+
+
+class IpcEvents(Static):
+    """Connections, listeners, guests and peers that came and went, newest first."""
+
+    def show(self, ipc, members: set[str] | None = None, limit: int = 60) -> None:
+        events = list(ipc.events) if ipc is not None else []
+        if members:
+            events = [e for e in events if e.a in members or e.b in members]
+        if not events:
+            self.update(Text("Nothing has opened or closed yet." if not members else
+                             "Nothing came or went for this node yet.", style="dim"))
+            return
+        out = Text()
+        for e in reversed(events[-limit:]):
+            good = e.verb in ("opened", "started", "listening", "new peer")
+            out.append(time.strftime("%H:%M:%S ", time.localtime(e.t)), style="#8a9aad")
+            out.append("+ " if good else "− ", style="bold #3dff7a" if good else "bold #e5383b")
+            if e.kind in ("container", "vm", "peer"):
+                out.append("◆ ", style="#c58cff")
+                out.append(e.name_a, style="bold")
+                out.append(f" {e.verb}" + (f" {e.end}" if e.end and e.end != e.name_a else ""), style="#8a9aad")
+            elif e.kind == "listen":
+                out.append(e.name_a, style="bold")
+                out.append(f" {e.verb} {e.end}", style="#8a9aad")
+            else:
+                out.append(e.name_a, style="bold")
+                out.append(" → ")
+                if e.name_b and e.name_b != e.end.lstrip("[").split("]")[0].rsplit(":", 1)[0]:
+                    out.append(f"{e.name_b} ")
+                out.append(e.end, style="#8a9aad")
+                out.append(f" {e.kind}", style="#4fd1ff" if e.kind == "tcp" else "#5b9bd5")
+            out.append("\n")
+        out.rstrip()
+        self.update(out)
 
 
 class IpcDetail(Static):

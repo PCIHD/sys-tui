@@ -384,3 +384,232 @@ def test_live_tracker_runs_on_this_machine():
         t.close()
     assert s.node("host") is not None
     assert all(k.a for k in s.links)
+
+
+# ------------------------------------------------------------------------- sys info
+SNMP = """Ip: Forwarding DefaultTTL
+Ip: 1 64
+Tcp: RtoAlgorithm RtoMin RetransSegs OutRsts
+Tcp: 1 200 4711 30
+Udp: InDatagrams InErrors
+Udp: 100 2
+"""
+NETSTAT = """TcpExt: SyncookiesSent ListenOverflows ListenDrops
+TcpExt: 0 5 7
+"""
+
+
+def test_parse_snmp_pairs_header_and_value_lines():
+    from systui.telemetry.netstat import parse_snmp
+
+    d = parse_snmp(SNMP) | parse_snmp(NETSTAT)
+    assert d["Tcp.RetransSegs"] == 4711 and d["Tcp.OutRsts"] == 30 and d["Udp.InErrors"] == 2
+    assert d["TcpExt.ListenDrops"] == 7 and d["Ip.DefaultTTL"] == 64
+    assert parse_snmp("") == {} and parse_snmp("garbage\n") == {}
+
+
+def test_kernel_counters_become_rates_and_tcp_states_are_counted(root):
+    _w(root, "proc/net/snmp", SNMP)
+    _w(root, "proc/net/netstat", NETSTAT)
+    _w(root, "proc/sys/net/netfilter/nf_conntrack_count", "812\n")
+    _w(root, "proc/sys/net/netfilter/nf_conntrack_max", "262144\n")
+    socks = [InetSock(0, "tcp", "192.168.1.10", 40000 + i, "1.1.1.1", 443, st, 1000)
+             for i, st in enumerate(["ESTAB", "ESTAB", "TIME-WAIT", "CLOSE-WAIT"])]
+    t = tracker(root, FakeDiag(inet=socks))
+    s = t.collect(0.0)
+    assert s.kernel["Tcp.RetransSegs"] is None and s.kernel["conntrack"] == 812  # no rate before a 2nd sample
+    assert s.tcp_states == {"ESTAB": 2, "TIME-WAIT": 1, "CLOSE-WAIT": 1}
+    _w(root, "proc/net/snmp", SNMP.replace("4711", "4721"))
+    s = t.collect(2.0)
+    assert s.kernel["Tcp.RetransSegs"] == 5.0 and s.kernel["TcpExt.ListenDrops"] == 0.0
+    assert s.kernel["conntrack_max"] == 262144
+
+
+def test_container_cpu_and_memory_come_from_its_scope_not_the_leaf(root):
+    scope = f"user.slice/user@1000.service/user.slice/libpod-{CTR_A}.scope"
+    _proc(root, 800, "postgres", cgroup=f"0::/{scope}/container", ns=2)
+    base = f"sys/fs/cgroup/{scope}"
+    _w(root, f"{base}/cpu.stat", "usage_usec 1000000\nuser_usec 900000\n")
+    _w(root, f"{base}/memory.current", "73400320\n")
+    _w(root, f"{base}/memory.max", "max\n")
+    _w(root, f"{base}/cpu.max", "200000 100000\n")
+    _w(root, f"{base}/pids.current", "10\n")
+    _w(root, f"{base}/container/memory.current", "1\n")  # the nested leaf: not what we want
+    t = tracker(root, FakeDiag())
+    t.collect(0.0)
+    _w(root, f"{base}/cpu.stat", "usage_usec 1500000\n")
+    n = t.collect(1.0).node(f"ctr:{CTR_A[:12]}")
+    assert n.cpu == pytest.approx(50.0) and n.rss == 73400320 and n.mem_limit is None
+    assert n.cpu_limit == 2.0 and n.pids_n == 10 and n.unit == f"libpod-{CTR_A}.scope"
+
+
+def test_process_nodes_get_fds_and_unit(root):
+    _proc(root, 100, "bash", {1: "pipe:[500]", 2: "/dev/null"}, {1: "01"},
+          cgroup="0::/user.slice/user@1000.service/app.slice/app-org.kde.konsole-123.scope")
+    _proc(root, 101, "grep", {0: "pipe:[500]"}, {0: "00"})
+    n = tracker(root, FakeDiag()).collect(0.0).node("proc:100")
+    assert n.fds == 2 and n.unit == "app-org.kde.konsole-123.scope"
+
+
+def test_annotate_ipc_joins_the_process_table_and_sums_guests():
+    from systui.telemetry import ProcStat, annotate_ipc
+
+    nodes = [IpcNode("proc:1", "process", "a", pids=[1]),
+             IpcNode("ctr:x", "container", "db", pids=[2, 3]),
+             IpcNode("ctr:y", "container", "web", pids=[4], cpu=12.0, rss=100)]
+    by_pid = {1: ProcStat(1, "a", cpu=5.0, rss=10, threads=2, started=50.0),
+              2: ProcStat(2, "p", cpu=1.0, rss=20, threads=1, started=40.0),
+              3: ProcStat(3, "q", cpu=2.0, rss=30, threads=3, started=45.0),
+              4: ProcStat(4, "w", cpu=99.0, rss=999, threads=1)}
+    ipc = IpcStat(nodes, [])
+    annotate_ipc(ipc, by_pid)
+    a, x, y = ipc.nodes
+    assert (a.cpu, a.rss, a.threads, a.started, a.res_prov) == (5.0, 10, 2, 50.0, "live")
+    assert (x.cpu, x.rss, x.threads, x.started, x.res_prov) == (3.0, 50, 4, 40.0, "derived")
+    assert (y.cpu, y.rss, y.res_prov) == (12.0, 100, "live")  # its cgroup already answered
+
+
+def test_detail_rows_show_resources_and_host_health():
+    from systui.tables import ipc_rows
+
+    ipc = DemoSource().collect().ipc
+    rows = {r.key: r.value for r in ipc_rows(ipc, "ctr:df517a104788")}
+    assert "% of a thread" in rows["CPU"] and " of " in rows["Memory"] and rows["Unit"].startswith("libpod-")
+    host = {r.key: r.value for r in ipc_rows(ipc, "host")}
+    assert "ESTAB" in host["TCP states"] and "retrans" in host["Net errors"] and "of" in host["Conntrack"]
+    proc = {r.key: r.value for r in ipc_rows(ipc, "proc:1000")}
+    assert "Open fds" in proc and proc["Started"].endswith("ago")
+
+
+# ------------------------------------------------------------------------- events
+def test_events_log_opens_and_closes_once_and_not_on_the_first_poll(root):
+    _proc(root, 100, "curl", {3: "socket:[900]"})
+    a = InetSock(900, "tcp", "192.168.1.10", 51900, "93.184.215.14", 443, "ESTAB", 1000)
+    lst = InetSock(901, "tcp", "0.0.0.0", 8080, "0.0.0.0", 0, "LISTEN", 1000)
+    diag = FakeDiag(inet=[lst])
+    t = tracker(root, diag)
+    t.clock = lambda: 1000.0
+    assert t.collect(0.0).events == []  # everything is new on the first poll: nothing to report
+    diag.inet_socks = [lst, a]
+    _proc(root, 101, "server", {4: "socket:[901]"})
+    for now in (1.0, 2.0, 3.0):  # the 3rd is a full walk: the socket's owner becomes known
+        s = t.collect(now)
+    opened = [e for e in s.events if e.verb == "opened"]
+    assert len(opened) == 1 and opened[0].end == "93.184.215.14:443" and opened[0].kind == "tcp"
+    assert [e.verb for e in s.events if e.kind == "listen"] == []  # it was there from the start
+    diag.inet_socks = [lst]
+    s = t.collect(4.0)
+    closed = [e for e in s.events if e.verb == "closed"]
+    assert len(closed) == 1 and closed[0].name_b == "Internet"
+    s = t.collect(5.0)
+    assert len(s.events) == 2  # nothing changed, and the listener did not flap when its owner became known
+
+
+def test_events_log_guests_listeners_and_new_peers(root):
+    diag = FakeDiag()
+    t = tracker(root, diag)
+    t.collect(0.0)
+    _proc(root, 800, "postgres", cgroup=f"0::/user.slice/libpod-{CTR_A}.scope/container", ns=2)
+    _w(root, "proc/net/arp", "IP address HW type Flags HW address Mask Device\n"
+                             "192.168.1.20 0x1 0x2 68:b9:c2:7e:fd:2e * enp6s0\n")
+    for now in (1.0, 2.0, 3.0):  # the 3rd is a full walk
+        s = t.collect(now)
+    verbs = {(e.verb, e.kind) for e in s.events}
+    assert ("started", "container") in verbs and ("new peer", "peer") in verbs
+    import shutil
+
+    shutil.rmtree(root / "proc/800")
+    for now in (4.0, 5.0, 6.0):
+        s = t.collect(now)
+    assert ("stopped", "container") in {(e.verb, e.kind) for e in s.events}
+
+
+def test_no_events_after_a_pause(root):
+    _proc(root, 100, "curl", {3: "socket:[900]"})
+    diag = FakeDiag()
+    t = tracker(root, diag)
+    t.collect(0.0)
+    diag.inet_socks = [InetSock(900, "tcp", "192.168.1.10", 51900, "93.184.215.14", 443, "ESTAB", 1000)]
+    assert t.collect(60.0).events == []  # the tab was hidden: this is a fresh start, not news
+
+
+def test_demo_has_events_and_ipc_dict_caps_them():
+    ipc = DemoSource().collect().ipc
+    assert any(e.verb == "opened" for e in ipc.events)
+    ipc.events = ipc.events * 40
+    assert len(ipc_dict(ipc)["events"]) == 50
+
+
+# ------------------------------------------------------------------------- shared memory
+def test_shared_memory_from_fds_maps_and_sysv(root):
+    memfd = "/memfd:pipewire-memfd:flags=0x0000000f,type=2,size=2312 (deleted)"
+    _proc(root, 100, "pipewire", {29: memfd})
+    _proc(root, 101, "firefox", {40: memfd})
+    _proc(root, 102, "plasmashell")
+    _proc(root, 103, "Xwayland")
+    _proc(root, 104, "kwin")
+    # 102 only has the segment mapped (fd already closed); 103 and 104 share a SysV segment
+    _w(root, "proc/102/maps", f"7f97-7f98 rw-s 00000000 00:01 5493                       {memfd}\n"
+                              "7f99-7f9a r-xp 00000000 00:1f 123                        /usr/lib64/libc.so.6\n")
+    _w(root, "proc/103/maps", "7f00-7f01 rw-s 00000000 00:01 6                         /SYSV00000000 (deleted)\n")
+    _w(root, "proc/104/maps", "7f00-7f01 rw-s 00000000 00:01 6                         /SYSV00000000 (deleted)\n")
+    _w(root, "proc/sysvipc/shm", "       key      shmid perms     size  cpid  lpid nattch   uid\n"
+                                 "         0          6  1606 10828800   104   103      2  1000\n")
+
+    class St:
+        st_dev, st_ino, st_size = os.makedev(0, 1), 5493, 2312
+
+    t = tracker(root, FakeDiag())
+    t.stat = lambda path: St
+    s = t.collect(0.0)
+    pw = link(s, "shm", b="proc:100")  # the lowest PID anchors a memfd
+    assert {k.a for k in pw} == {"proc:101", "proc:102"} and pw[0].b_end == "pipewire-memfd"
+    sysv = link(s, "shm", b="proc:104")  # the SysV creator anchors its segment
+    assert [k.a for k in sysv] == ["proc:103"] and sysv[0].b_end == "SysV #6"
+    assert s.counts["shm"] == 3
+    assert s.node("proc:100").shm_n == 1 and s.node("proc:100").shm_bytes == 2312
+    assert s.node("proc:103").shm_bytes == 10828800
+
+
+def test_a_segment_held_by_one_process_is_not_a_link(root):
+    _proc(root, 100, "alone")
+    _w(root, "proc/100/maps", "7f00-7f01 rw-s 00000000 00:01 77                        /dev/shm/mine\n")
+    s = tracker(root, FakeDiag()).collect(0.0)
+    assert link(s, "shm") == [] and s.node("proc:100") is None
+
+
+def test_maps_are_reread_round_robin_after_a_fresh_start(root):
+    for pid in (300, 301, 302):
+        _proc(root, pid, f"p{pid}")
+        _w(root, f"proc/{pid}/maps", "7f00-7f01 rw-s 00000000 00:01 9                         /dev/shm/x\n")
+    t = tracker(root, FakeDiag())
+    reads = []
+    real = open
+
+    def spy(path, *a, **kw):
+        if str(path).endswith("/maps"):
+            reads.append(int(str(path).split("/")[-2]))
+        return real(path, *a, **kw)
+
+    import builtins
+
+    builtins.open = spy
+    try:
+        t.collect(0.0)  # fresh: every process
+        assert sorted(reads) == [300, 301, 302]
+        reads.clear()
+        for now in (1.0, 2.0, 3.0):  # the next full walk: a third of them
+            s = t.collect(now)
+        assert len(reads) == 1
+    finally:
+        builtins.open = real
+    assert len(link(s, "shm")) == 2  # the cache stands in for the other two
+
+
+def test_shm_name_and_parsers():
+    assert I.shm_name("/memfd:pipewire-memfd:flags=0xf,type=2 (deleted)") == ("memfd", "pipewire-memfd")
+    assert I.shm_name("/dev/shm/u1000-ValveIPCSharedObj-Steam") == ("posix", "/dev/shm/u1000-ValveIPCSharedObj-Steam")
+    assert I.shm_name("/SYSV0000abcd (deleted)")[0] == "sysv"
+    segs = I.parse_maps_shm(b"7f-80 rw-s 00000000 00:01 5 /memfd:a (deleted)\n7f-80 rw-s 00000000 00:01 5 /memfd:a (deleted)\n")
+    assert segs == [(os.makedev(0, 1), 5, "/memfd:a (deleted)")]  # one entry per segment
+    assert I.parse_sysvipc("key shmid perms size cpid\n 0 6 1606 4096 104 103 2\n") == {6: (0, 4096, 104)}

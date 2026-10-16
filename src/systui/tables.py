@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from rich.table import Table
 from rich.text import Text
 
@@ -10,6 +12,7 @@ from pixboard.rows import DERIVED, LIVE, Row
 from .history import History
 from .render.charts import IN, OUT, human_bytes
 from .telemetry import IpcLink, IpcNode, IpcStat, ProcStat, SystemSnapshot
+from .telemetry.netstat import COUNTERS
 
 SORTS = {
     "cpu": ("CPU", lambda p: p.cpu),
@@ -91,8 +94,9 @@ def sensors_table(s: SystemSnapshot | None, h: History) -> Table:
 
 # ------------------------------------------------------------------------- IPC
 IPC_COLS = ("Kind", "From", "To", "State", "▲ in", "▼ out", "")
-IPC_KIND_STYLE = {"tcp": "#4fd1ff", "udp": "#5b9bd5", "unix": "#a78bfa", "pipe": "#3ddc84", "listen": "#8a9aad"}
-KIND_ORDER = {"tcp": 0, "udp": 1, "unix": 2, "pipe": 3, "listen": 4}
+IPC_KIND_STYLE = {"tcp": "#4fd1ff", "udp": "#5b9bd5", "unix": "#a78bfa", "pipe": "#3ddc84", "shm": "#3fb8af",
+                  "listen": "#8a9aad"}
+KIND_ORDER = {"tcp": 0, "udp": 1, "unix": 2, "pipe": 3, "shm": 4, "listen": 5}
 
 
 def ipc_widths(total: int) -> list[int]:
@@ -101,6 +105,28 @@ def ipc_widths(total: int) -> list[int]:
     room = max(30, total - sum(fixed) - 2 * len(fixed) - 2)
     fixed[1], fixed[2] = room * 9 // 20, room - room * 9 // 20
     return fixed
+
+
+KIND_FILTERS = (None, ("tcp", "udp"), ("unix",), ("pipe",), ("shm",), ("listen",))
+
+
+def ipc_filter(links: list[IpcLink], nodes: dict[str, IpcNode], kinds: tuple[str, ...] | None,
+               text: str = "") -> list[IpcLink]:
+    """Links of the given kinds whose end names, PIDs, paths or ``ip:port`` contain ``text``."""
+    out = [k for k in links if kinds is None or k.kind in kinds]
+    text = text.strip().lower()
+    if not text:
+        return out
+
+    def hay(k: IpcLink) -> str:
+        parts = [k.a_end, k.b_end, k.state, str(k.pid_a or ""), str(k.pid_b or "")]
+        for nid in (k.a, k.b):
+            n = nodes.get(nid)
+            if n is not None:
+                parts += [n.name, n.sub, *map(str, n.pids[:8]), *n.addrs]
+        return " ".join(parts).lower()
+
+    return [k for k in out if text in hay(k)]
 
 
 def ipc_sorted(links: list[IpcLink]) -> list[IpcLink]:
@@ -141,9 +167,18 @@ def ipc_node(ipc: IpcStat, nid: str, members: set[str] | None = None) -> IpcNode
     if len(ms) == 1 and ms[0].id == nid:
         return ms[0]
     measured = any(m.in_bps is not None or m.out_bps is not None for m in ms)
+
+    def total(attr: str):
+        vals = [getattr(m, attr) for m in ms if getattr(m, attr) is not None]
+        return sum(vals) if vals else None
+
+    starts = [m.started for m in ms if m.started]
     return IpcNode(nid, "process", f"{ms[0].name} ×{len(ms)}", ms[0].sub, pids=sorted(p for m in ms for p in m.pids),
                    in_bps=sum(m.in_bps or 0 for m in ms) if measured else None,
-                   out_bps=sum(m.out_bps or 0 for m in ms) if measured else None, cmd=ms[0].cmd)
+                   out_bps=sum(m.out_bps or 0 for m in ms) if measured else None, cmd=ms[0].cmd,
+                   cpu=total("cpu"), rss=total("rss"), threads=total("threads"), fds=total("fds"),
+                   started=min(starts) if starts else None, unit=ms[0].unit,
+                   shm_n=total("shm_n"), shm_bytes=total("shm_bytes"))
 
 
 def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str] | None = None) -> list[Row]:
@@ -162,6 +197,12 @@ def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str]
             out.append(Row("User" if n.id != "hidden" else "Note", n.sub, LIVE if n.id != "hidden" else DERIVED))
         if n.cmd:
             out.append(Row("Command", n.cmd[:160], LIVE))
+        out += _resources(n)
+        if n.shm_n:
+            size = f" · {human_bytes(n.shm_bytes)}" if n.shm_bytes else ""
+            what = "holds" if n.id.startswith("group:") else "segment"  # a segment two members share counts twice
+            out.append(Row("Shared memory", f"{n.shm_n} {what}{'s' * (n.shm_n != 1 and what == 'segment')}{size}",
+                           LIVE))
     elif n.kind in ("container", "vm"):
         out.append(Row("Runtime", n.runtime or n.kind, LIVE))
         if n.sub:
@@ -177,6 +218,7 @@ def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str]
         if n.pids:
             more = f" (+{len(n.pids) - 8})" if len(n.pids) > 8 else ""
             out.append(Row("PIDs", ", ".join(map(str, n.pids[:8])) + more, LIVE))
+        out += _resources(n)
     elif n.kind == "peer":
         out.append(Row("Address", ", ".join(n.addrs), LIVE))
         if n.dns:
@@ -192,6 +234,7 @@ def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str]
             out.append(Row("Addresses", ", ".join(n.addrs[:4]), LIVE))
         c = ipc.counts
         out.append(Row("Channels", " · ".join(f"{c[k]} {k}" for k in KIND_ORDER if c.get(k)), LIVE))
+        out += host_health(ipc)
         if ipc.note:
             out.append(Row("Hidden", ipc.note, DERIVED))
         return out
@@ -227,6 +270,58 @@ def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str]
                      f"{on.name if on else '?'} ({kind}{rate})")
     if peers:
         out.append(Row("Talks to", ", ".join(peers), LIVE))
+    return out
+
+
+def ago(epoch: float | None, now: float | None = None) -> str:
+    if not epoch:
+        return ""
+    s = max(0, int((now or time.time()) - epoch))
+    d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
+    return f"{d}d {h}h ago" if d else f"{h}h {m:02d}m ago" if h else f"{m}m {s % 60:02d}s ago"
+
+
+def _of(v: str, limit: str | None) -> str:
+    return f"{v} of {limit}" if limit else v
+
+
+def _resources(n: IpcNode) -> list[Row]:
+    """CPU, memory, threads, fds, unit and start time: from the process table for a process, from
+    the cgroup for a container or VM (derived when summed over its PIDs instead)."""
+    out: list[Row] = []
+    tag = LIVE if n.res_prov == "live" else DERIVED
+    if n.cpu is not None:
+        lim = f"{n.cpu_limit:g} cores" if n.cpu_limit else None
+        out.append(Row("CPU", _of(f"{n.cpu:.1f}% of a thread", lim), tag))
+    if n.rss is not None:
+        out.append(Row("Memory", _of(human_bytes(n.rss), human_bytes(n.mem_limit) if n.mem_limit else None), tag))
+    if n.pids_n is not None:
+        out.append(Row("Tasks", str(n.pids_n), LIVE))
+    elif n.threads:
+        out.append(Row("Threads", str(n.threads), LIVE))
+    if n.fds is not None:
+        out.append(Row("Open fds", str(n.fds), LIVE))
+    if n.started:
+        out.append(Row("Started", ago(n.started), LIVE))
+    if n.unit:
+        out.append(Row("Unit", n.unit[:60], LIVE))
+    return out
+
+
+def host_health(ipc: IpcStat) -> list[Row]:
+    """TCP states and the kernel's network error counters, for the host node."""
+    out: list[Row] = []
+    st = ipc.tcp_states
+    if st:
+        order = ("ESTAB", "LISTEN", "TIME-WAIT", "CLOSE-WAIT", "SYN-SENT", "SYN-RECV", "FIN-WAIT-1", "FIN-WAIT-2")
+        out.append(Row("TCP states", " · ".join(f"{st[k]} {k}" for k in order if st.get(k)), LIVE))
+    k = ipc.kernel
+    bad = [f"{v:.1f}/s {COUNTERS[c]}" for c, v in k.items() if c in COUNTERS and v]
+    if any(c in COUNTERS and v is not None for c, v in k.items()):
+        out.append(Row("Net errors", ", ".join(bad) or "none", LIVE))
+    if k.get("conntrack") is not None:
+        mx = k.get("conntrack_max")
+        out.append(Row("Conntrack", f"{k['conntrack']:.0f}" + (f" of {mx:.0f}" if mx else ""), LIVE))
     return out
 
 

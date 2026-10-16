@@ -28,11 +28,12 @@ import re
 import socket
 import struct
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from . import IpcLink, IpcNode, IpcStat, Rates, SysFS
-from . import sockdiag
+from . import IpcEvent, IpcLink, IpcNode, IpcStat, Rates, SysFS
+from . import netstat, sockdiag
 from .sockdiag import InetSock, UnixSock
 
 CTR_CGROUP = re.compile(r"(libpod-|docker-|/docker/)([0-9a-f]{64})")
@@ -41,6 +42,9 @@ HELPERS = ("rootlessport", "pasta", "slirp4netns")  # host-side ends of rootless
 BRIDGES = ("podman", "cni-", "docker", "br-", "virbr", "vnet", "veth", "tap", "lo")  # not the LAN
 EVERY = 3
 STALE_S = 5.0  # a gap this long means the tab was hidden: walk again before showing anything
+EVENTS_KEEP = 300
+SHM_EVERY = 3  # /proc/<pid>/maps is big: each full walk re-reads a third of them, round-robin
+SHM_MARKS = (b"memfd:", b"/dev/shm/", b"/SYSV")
 API_REFRESH_S = 60.0
 
 
@@ -57,6 +61,7 @@ class CtrMeta:
     networks: list[str] = field(default_factory=list)
     ports: list[tuple[str, int, int, str]] = field(default_factory=list)  # host ip, host port, ctr port, proto
     netmode: str = ""
+    created: float | None = None  # epoch seconds
 
 
 def parse_containers(items, engine: str) -> dict[str, CtrMeta]:
@@ -75,7 +80,8 @@ def parse_containers(items, engine: str) -> dict[str, CtrMeta]:
                     it.get("Status") or it.get("State") or "", runtime,
                     [v["IPAddress"] for v in nets.values() if v.get("IPAddress")],
                     [v["Gateway"] for v in nets.values() if v.get("Gateway")], sorted(nets),
-                    netmode=(it.get("HostConfig") or {}).get("NetworkMode") or "")
+                    netmode=(it.get("HostConfig") or {}).get("NetworkMode") or "",
+                    created=it.get("Created") if isinstance(it.get("Created"), (int, float)) else None)
         for p in it.get("Ports") or []:
             if p.get("PublicPort"):
                 m.ports.append((p.get("IP") or "0.0.0.0", int(p["PublicPort"]), int(p.get("PrivatePort") or 0),
@@ -148,6 +154,74 @@ def netdev_bytes(text: str) -> tuple[int, int] | None:
         except ValueError:
             continue
     return (rx, tx) if seen else None
+
+
+def scope_of(cgroup: str, needle: str) -> str:
+    """The cgroup path down to the component containing ``needle``. For a container that is its
+    ``libpod-<id>.scope``, not podman 5's nested ``…/container`` leaf, which undercounts."""
+    parts = cgroup.split("/")
+    for i, c in enumerate(parts):
+        if needle and needle in c:
+            return "/".join(parts[:i + 1])
+    return ""
+
+
+def unit_of(cgroup: str) -> str:
+    """The innermost systemd unit in a cgroup path: ``app-…-1234.scope``, ``foo.service``."""
+    for c in reversed(cgroup.split("/")):
+        if c.endswith((".scope", ".service")):
+            return c
+    return cgroup.rsplit("/", 1)[-1]
+
+
+def parse_cpu_max(text: str | None) -> float | None:
+    """cgroup ``cpu.max`` (``"200000 100000"`` or ``"max 100000"``) → cores, None if unlimited."""
+    f = (text or "").split()
+    try:
+        return int(f[0]) / int(f[1]) if len(f) == 2 and f[0] != "max" else None
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def shm_name(path: str) -> tuple[str, str]:
+    """(kind, name) of a shared segment's path: ``memfd``, ``posix`` (/dev/shm) or ``sysv``."""
+    p = path.removesuffix(" (deleted)")
+    if p.startswith("/memfd:"):
+        return "memfd", p[7:].split(":", 1)[0] or "memfd"
+    if p.startswith("/SYSV"):
+        return "sysv", "SysV"
+    return "posix", p
+
+
+def parse_maps_shm(text: bytes) -> list[tuple[int, int, str]]:
+    """Shared segments mapped by a process: ``(dev, ino, path)`` per distinct segment. The device
+    and inode give identity even after the process closed the fd it mapped."""
+    out: dict[tuple[int, int], str] = {}
+    for line in text.splitlines():
+        if not any(m in line for m in SHM_MARKS):
+            continue
+        f = line.decode(errors="replace").split(maxsplit=5)
+        if len(f) < 6:
+            continue
+        try:
+            maj, mn = f[3].split(":")
+            key = (os.makedev(int(maj, 16), int(mn, 16)), int(f[4]))
+        except ValueError:
+            continue
+        out.setdefault(key, f[5])
+    return [(dev, ino, path) for (dev, ino), path in out.items()]
+
+
+def parse_sysvipc(text: str) -> dict[int, tuple[int, int, int]]:
+    """``/proc/sysvipc/shm`` → shmid → (key, size, creator pid)."""
+    out: dict[int, tuple[int, int, int]] = {}
+    for line in text.splitlines()[1:]:
+        f = line.split()
+        try:
+            out[int(f[1])] = (int(f[0]), int(f[3]), int(f[4]))
+        except (IndexError, ValueError):
+            continue
+    return out
 
 
 def qemu_name(argv: list[str]) -> str:
@@ -275,6 +349,7 @@ class _Proc:
     engine: str = ""  # podman | docker | lxc
     cgroup: str = ""
     tun: list[str] = field(default_factory=list)  # tap interfaces behind /dev/net/tun fds
+    nfd: int = 0
 
 
 @dataclass
@@ -290,6 +365,16 @@ class _Guest:
     iface: str = ""
     sub: str = ""
     socks: list[InetSock] = field(default_factory=list)  # its own netns' sockets
+    cgroup: str = ""  # its scope under /sys/fs/cgroup
+
+
+@dataclass
+class _Shm:
+    kind: str  # memfd | posix | sysv
+    name: str
+    size: int | None = None
+    pids: set[int] = field(default_factory=set)
+    creator: int | None = None  # SysV cpid
 
 
 @dataclass
@@ -308,6 +393,7 @@ class _Walk:
     gateways: set[str]
     unowned: set[int]  # inet inodes without a readable owner at walk time
     notes: list[str]
+    shm: dict[tuple[int, int], _Shm] = field(default_factory=dict)  # (dev, ino) → segment
 
 
 def _read(path: str) -> str:
@@ -347,6 +433,13 @@ class IpcTracker:
         self.self_pid = os.getpid()
         self._cmd: dict[int, str] = {}
         self._users: dict[int, str] = {}
+        self.events: deque[IpcEvent] = deque(maxlen=EVENTS_KEEP)
+        self._seen: dict[tuple, tuple] | None = None  # event key → (verb pair, kind, a, b, end, names)
+        self._peers_seen: set[str] = set()
+        self.clock = time.time  # event timestamps
+        self.stat = os.stat  # shared-memory fds: their (dev, ino) and size
+        self._maps: dict[int, list[tuple[int, int, str]]] = {}  # pid → mapped shared segments
+        self._fulls = 0
 
     def close(self) -> None:
         if self.rdns is not None:
@@ -355,13 +448,16 @@ class IpcTracker:
     # --------------------------------------------------------------------- polling
     def collect(self, now: float | None = None) -> IpcStat:
         now = time.monotonic() if now is None else now
-        full = self.walk is None or self.n % self.every == 0 or now - self._last > STALE_S
+        fresh = self.walk is None or now - self._last > STALE_S  # nothing to diff events against
+        full = fresh or self.n % self.every == 0
         self.n = 1 if full else self.n + 1
         self._last = now
         inet, note = self._inet()
         if full:
-            self.walk = self._full(now, inet)
+            self.walk = self._full(now, inet, fresh)
         stat = self._assemble(self.walk, inet, now)
+        self._diff(stat, fresh)
+        stat.events = list(self.events)
         if note:
             stat.note = "  ·  ".join(x for x in (note, stat.note) if x)
         return stat
@@ -375,8 +471,8 @@ class IpcTracker:
                 out += sockdiag.proc_inet(self.fs.read(f"proc/net/{name}") or "", name[:3])
             return out, "no sock_diag: TCP rates unavailable"
 
-    def _full(self, now: float, inet: list[InetSock]) -> _Walk:
-        procs, socks, pipes, hidden = self._walk_procs()
+    def _full(self, now: float, inet: list[InetSock], fresh: bool = True) -> _Walk:
+        procs, socks, pipes, hidden, shm = self._walk_procs()
         notes = []
         try:
             unix = self.diag.unix()
@@ -399,19 +495,53 @@ class IpcTracker:
         alive = set(procs)
         for k in [k for k in self._cmd if k not in alive]:
             del self._cmd[k]
+        self._shm_maps(procs, shm, fresh)
         return _Walk(now, procs, socks, pipes, hidden, unix, guests, pid_guest, own, nets,
                      parse_arp(self.fs.read("proc/net/arp") or ""), default_gateways(self.fs.read("proc/net/route") or ""),
-                     unowned, notes)
+                     unowned, notes, shm)
+
+    def _shm_maps(self, procs: dict[int, _Proc], shm: dict[tuple[int, int], _Shm], fresh: bool) -> None:
+        """Add the segments each process has mapped, and SysV names and sizes. Reading every
+        process's maps costs about 60 ms here, so after a fresh start each full walk re-reads
+        only a third of them (by PID), and the cache stands in for the rest."""
+        self._maps = {pid: v for pid, v in self._maps.items() if pid in procs}
+        slot = self._fulls % SHM_EVERY
+        self._fulls += 1
+        for pid in procs:
+            if not fresh and pid % SHM_EVERY != slot:
+                continue
+            try:
+                with open(f"{self.fs.p('proc')}/{pid}/maps", "rb") as f:
+                    segs = parse_maps_shm(f.read())
+            except OSError:
+                segs = []
+            if segs:
+                self._maps[pid] = segs
+            else:
+                self._maps.pop(pid, None)
+        sysv = parse_sysvipc(self.fs.read("proc/sysvipc/shm") or "")
+        for pid, segs in self._maps.items():
+            for dev, ino, path in segs:
+                seg = shm.get((dev, ino))
+                if seg is None:
+                    kind, name = shm_name(path)
+                    seg = shm[(dev, ino)] = _Shm(kind, name)
+                seg.pids.add(pid)
+        for (dev, ino), seg in shm.items():
+            if seg.kind == "sysv" and ino in sysv:
+                key, seg.size, seg.creator = sysv[ino]
+                seg.name = f"SysV #{ino}" + (f" key {key:#x}" if key else "")
 
     def _walk_procs(self):
         procs: dict[int, _Proc] = {}
         socks: dict[int, list[int]] = {}
         holders: dict[int, list[tuple[int, str]]] = {}
+        shm: dict[tuple[int, int], _Shm] = {}
         hidden = 0
         try:
             it = os.scandir(self.fs.p("proc"))
         except OSError:
-            return procs, socks, {}, 0
+            return procs, socks, {}, 0, {}
         with it:
             for e in it:
                 if not e.name.isdigit():
@@ -442,6 +572,7 @@ class IpcTracker:
                 tun = []
                 with fds:
                     for f in fds:
+                        p.nfd += 1
                         try:
                             t = os.readlink(f.path)
                         except OSError:
@@ -452,6 +583,15 @@ class IpcTracker:
                             holders.setdefault(int(t[6:-1]), []).append((pid, f.name))
                         elif t == "/dev/net/tun":
                             tun.append(f.name)
+                        elif t.startswith(("/memfd:", "/dev/shm/")):
+                            try:
+                                st = self.stat(f.path)
+                            except OSError:
+                                continue
+                            seg = shm.get((st.st_dev, st.st_ino))
+                            if seg is None:
+                                seg = shm[(st.st_dev, st.st_ino)] = _Shm(*shm_name(t), size=st.st_size)
+                            seg.pids.add(pid)
                 for fd in tun:
                     for line in _read(f"{base}/fdinfo/{fd}").splitlines():
                         if line.startswith("iff:"):
@@ -475,7 +615,7 @@ class IpcTracker:
                 if mode in (0, 2):
                     r.add(pid)
             pipes[ino] = (w, r)
-        return procs, socks, pipes, hidden
+        return procs, socks, pipes, hidden, shm
 
     def _containers(self) -> dict[str, CtrMeta]:
         out: dict[str, CtrMeta] = {}
@@ -515,6 +655,7 @@ class IpcTracker:
             runtime = meta.runtime if meta else procs[pids[0]].engine
             g = _Guest(nid, "container", meta.name if meta else (cid[4:] if lxc else cid[:12]), runtime, sorted(pids),
                        min(pids), meta=meta, sub=meta.image if meta else "")
+            g.cgroup = scope_of(procs[min(pids)].cgroup, f"lxc.payload.{cid[4:]}" if lxc else cid)
             guests[nid] = g
         for path in self.fs.glob("run/systemd/machines/*"):
             if ":" in path.name:
@@ -530,7 +671,8 @@ class IpcTracker:
             except ValueError:
                 leader = pids[0] if pids else None
             guests[nid] = _Guest(nid, "vm" if vm else "container", path.name, "vm" if vm else "nspawn",
-                                 pids or ([leader] if leader else []), leader, sub=kv.get("SERVICE", ""))
+                                 pids or ([leader] if leader else []), leader, sub=kv.get("SERVICE", ""),
+                                 cgroup=scope_of(procs[pids[0]].cgroup, scope) if pids else "")
         for p in procs.values():
             if not (p.comm.startswith("qemu-system") or p.comm.startswith("qemu-kvm")):
                 continue
@@ -596,6 +738,9 @@ class IpcTracker:
                         g.pids[:64], g.netns, [f"{h}:{hp}→{cp}/{pr}" for h, hp, cp, pr in m.ports] if m else [],
                         iface=g.iface)
             nodes[g.nid] = n
+            if g.cgroup:
+                self._cgroup(n, g.cgroup, rate)
+            n.started = m.created if m else None
             for ip in n.addrs:
                 ctr_ips[ip] = g.nid
             for _h, hp, _cp, pr in (m.ports if m else []):
@@ -628,7 +773,8 @@ class IpcTracker:
             if nid not in nodes:
                 p = w.procs.get(pid)
                 nodes[nid] = IpcNode(nid, "process", p.comm if p else str(pid), self._user(p.uid) if p else "",
-                                     pids=[pid], cmd=self._cmdline(pid))
+                                     pids=[pid], cmd=self._cmdline(pid), fds=p.nfd if p else None,
+                                     unit=unit_of(p.cgroup) if p else "")
             return nid
 
         def remote(kind: str, ip: str, cid: str) -> str:
@@ -677,6 +823,24 @@ class IpcTracker:
             a, b = pnode(pw), pnode(pr)
             if a != b:
                 fold(a, b, "pipe", pw, pr, "", "", ino)
+        # ---- shared memory: a star from each holder to one anchor, the SysV creator or the lowest
+        # PID, so a segment held by K processes is K-1 links, not K²
+        shm_n: dict[str, int] = {}
+        shm_b: dict[str, int] = {}
+        for (_dev, ino), seg in w.shm.items():
+            if len(seg.pids) < 2:
+                continue
+            anchor = seg.creator if seg.creator in seg.pids else min(seg.pids)
+            b = pnode(anchor)
+            for pid in sorted(seg.pids - {anchor}):
+                a = pnode(pid)
+                if a != b:
+                    fold(a, b, "shm", pid, anchor, seg.name, "", ino)
+            for nid in {pnode(p) for p in seg.pids}:
+                shm_n[nid] = shm_n.get(nid, 0) + 1
+                shm_b[nid] = shm_b.get(nid, 0) + (seg.size or 0)
+        for nid, n_seg in shm_n.items():
+            nodes[nid].shm_n, nodes[nid].shm_bytes = n_seg, shm_b[nid] or None
         links += agg.values()
 
         # ---- TCP / UDP in this netns
@@ -774,13 +938,70 @@ class IpcTracker:
                     b, prov = remote(kind, s.dst, ""), "live"
                 links.append(IpcLink(g.nid, b, s.proto, end, _hp(s.dst, s.dport), state=s.state, prov=prov, ino=s.ino))
 
+        # ---- host-wide health: kernel counters and TCP states
+        snmp = netstat.parse_snmp(self.fs.read("proc/net/snmp") or "")
+        snmp |= netstat.parse_snmp(self.fs.read("proc/net/netstat") or "")
+        kernel: dict[str, float | None] = {c: rate(f"k:{c}", snmp.get(c)) for c in netstat.COUNTERS}
+        kernel["conntrack"] = self.fs.read_int("proc/sys/net/netfilter/nf_conntrack_count")
+        kernel["conntrack_max"] = self.fs.read_int("proc/sys/net/netfilter/nf_conntrack_max")
+        states: dict[str, int] = {}
+        for s in inet:
+            if s.proto == "tcp":
+                states[s.state] = states.get(s.state, 0) + 1
+
         for k in [k for k in self.rates.prev if k not in touched]:
             del self.rates.prev[k]
         self._rollup(nodes, links)
         counts: dict[str, int] = {}
         for k in links:
             counts[k.kind] = counts.get(k.kind, 0) + k.count
-        return IpcStat(list(nodes.values()), links, counts, "  ·  ".join(w.notes), now - w.t)
+        return IpcStat(list(nodes.values()), links, counts, "  ·  ".join(w.notes), now - w.t, kernel, states)
+
+    def _diff(self, stat: IpcStat, fresh: bool) -> None:
+        """Log what appeared and went away since the last poll. Sockets are keyed on their
+        addresses, not on node ids: a new socket's owner is only known after the next full
+        walk, and keying on it would log a fake close and reopen. Unix sockets and pipes are
+        left out; a desktop churns through them constantly."""
+        names = {n.id: n.name for n in stat.nodes}
+        cur: dict[tuple, tuple] = {}
+        for k in stat.links:
+            if k.kind in ("tcp", "udp"):
+                cur[(k.kind, k.a_end, k.b_end)] = (("opened", "closed"), k.kind, k.a, k.b, k.b_end)
+            elif k.kind == "listen":
+                cur[("listen", k.a_end, k.ino)] = (("listening", "stopped listening"), "listen", k.a, "", k.a_end)
+        for n in stat.nodes:
+            if n.kind in ("container", "vm"):
+                cur[(n.kind, n.id)] = (("started", "stopped"), n.kind, n.id, "", "")
+        cur = {key: (*v, names.get(v[2], v[2]), names.get(v[3], v[3])) for key, v in cur.items()}
+        t = self.clock()
+        peers = {n.id: n for n in stat.nodes if n.kind == "peer"}
+        if not fresh and self._seen is not None:
+            for key in cur.keys() - self._seen.keys():
+                (verb, _), kind, a, b, end, na, nb = cur[key]
+                self.events.append(IpcEvent(t, verb, kind, a, b, end, na, nb))
+            for key in self._seen.keys() - cur.keys():
+                (_, verb), kind, a, b, end, na, nb = self._seen[key]
+                self.events.append(IpcEvent(t, verb, kind, a, b, end, na, nb))
+            for nid in peers.keys() - self._peers_seen:
+                n = peers[nid]
+                self.events.append(IpcEvent(t, "new peer", "peer", nid, "", n.addrs[0] if n.addrs else "", n.name))
+        self._seen = cur
+        self._peers_seen |= peers.keys()
+
+    def _cgroup(self, n: IpcNode, path: str, rate) -> None:
+        """A guest's CPU, memory and limits from its cgroup scope, read every poll."""
+        base = f"sys/fs/cgroup{path}"
+        usec = None
+        for line in (self.fs.read(f"{base}/cpu.stat") or "").splitlines():
+            if line.startswith("usage_usec "):
+                usec = int(line.split()[1])
+        per_s = rate(f"cg:{n.id}:cpu", usec)
+        n.cpu = per_s / 1e4 if per_s is not None else None  # µs of CPU per second → % of one thread
+        n.rss = self.fs.read_int(f"{base}/memory.current")
+        n.mem_limit = self.fs.read_int(f"{base}/memory.max")  # "max" → None
+        n.cpu_limit = parse_cpu_max(self.fs.read(f"{base}/cpu.max"))
+        n.pids_n = self.fs.read_int(f"{base}/pids.current")
+        n.unit = unit_of(path)
 
     def _rollup(self, nodes: dict[str, IpcNode], links: list[IpcLink]) -> None:
         """Node rates from their links; reverse-DNS names for peers."""

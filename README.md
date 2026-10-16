@@ -43,6 +43,8 @@ The best terminal is a true-colour one that is at least about 160×45.
 | `1`–`8` | Tabs: Board · CPU · Memory · Storage · Network · Processes · Sensors · IPC |
 | mouse / `Tab` / arrows | Select a board part; the side panel shows everything known about it |
 | `8`, then mouse / `Tab` | IPC map: select a process, container, VM or LAN peer to narrow the links table. Enter on a link lights both ends |
+| `i` · `f` · `/` (IPC) | Process rows: talkers → + direct peers → all · link kinds: all → tcp+udp → unix → pipe → shm → listen · text filter on the links table (Esc clears) |
+| Enter on the IPC map | Jump to the selected node's busiest process on the Processes tab |
 | `h` | Board overlay: live animation → thermal → off |
 | `l` · `c` | Labels on/off · graphics-card footprint on/off |
 | `g` / `G` / Enter on the card | Fly into the GPU. Top tabs become Card · PCB · Back · Die · Cores. Tables underneath. Esc restores Board · CPU · … |
@@ -58,7 +60,8 @@ The best terminal is a true-colour one that is at least about 160×45.
 Tab `8` shows the channels between processes, containers, VMs and the LAN (`uv run systui --tab ipc`).
 
 - **The machine frame.** It holds this host's busiest processes, one row each. Same-name processes fold into `name ×n`.
-- **Arcs.** Unix sockets (violet) and pipes (green) between processes are drawn as arcs in the left gutter. With nothing selected, only the busiest few are drawn; selecting a node draws all of its arcs.
+- **Quiet rows and hubs.** A process serving Unix sockets to 10 or more others is a hub (dbus-broker, pipewire, the compositor). It shows `hub · N clients`, and its clients carry a ◆ in place of an arc. By default only talkers show: processes that move bytes or reach a container, VM, peer or the Internet, plus the hubs. `i` adds processes with direct Unix or pipe peers, then everything. The rest fold into `+N quiet processes`.
+- **Arcs.** Unix sockets (violet), pipes (green) and shared memory (teal) between processes are drawn as arcs in the left gutter. With nothing selected, only the busiest few are drawn, and none to a hub. Selecting a node brings in every process it talks to, draws all of its arcs, and labels each partner with the link kinds (`unix×3`).
 - **Lanes.** Lanes in the channel carry TCP/UDP to each container or VM tile.
 - **The NIC.** Everything that leaves the machine goes through the NIC on the frame's right edge. A trunk runs from it to the LAN peers, and from the router to the Internet.
 
@@ -70,12 +73,26 @@ Traffic follows the board's convention:
 Links without byte counters are steady traces. Unix sockets and pipes have none; neither do sockets inside a container's netns.
 
 Below the map, a table lists every channel: kind, both ends with pid and address, state, ▲▼ rate, and a ● live / ◐ derived tag. Pipes and socketpairs between the same two processes fold into one row (`unix ×3`). The side panel shows the selected node:
-- a process: command line
-- a container: image, status, IPs, published ports and netns
-- a VM: its tap
+- a process: command line, CPU, memory, threads, open fds, start time and systemd unit
+- a container: image, status, IPs, published ports, netns, and CPU, memory and task count against its cgroup limits
+- a VM: its tap, and the same cgroup figures when machined runs it
 - a LAN peer: MAC, reverse-DNS name and whether it is the gateway
+- this machine: TCP states, the kernel's network error rates (retransmits, resets, listen drops, …) and conntrack use
 
-The walk is cheap but not free. It reads every `/proc/<pid>/fd`, at about 30 ms here. So it runs only while the tab is showing, does a full pass every 3rd poll, and only re-reads TCP byte counters in between.
+Under it, an **Events** log lists what came and went, newest first, filtered to the selected node:
+- TCP and UDP connections opening and closing
+- listeners appearing and going away
+- containers and VMs starting and stopping
+- new LAN peers
+
+A node with an event in the last 3 s flashes its accent stripe on the map: green for new, red for gone. Unix sockets and pipes are left out, because a desktop opens and closes them constantly.
+
+Load shows on the map too:
+- A process row is tinted by its CPU, from left to right.
+- A guest tile shows its CPU and memory.
+- When there is room under the LAN peers, a "this machine" strip shows CPU, memory, NIC traffic, TCP states and error rates. A CLOSE-WAIT count is orange, because it usually means an app is not closing its sockets.
+
+The walk is cheap but not free. It reads every `/proc/<pid>/fd` and a third of the `/proc/<pid>/maps`, at about 50 ms here (about 100 ms on the first poll, which reads every maps file). So it runs only while the tab is showing, does a full pass every 3rd poll, and only re-reads TCP byte counters, cgroup and kernel counters in between (about 7 ms).
 
 ## What the board shows
 
@@ -105,7 +122,7 @@ Each value in the detail panel carries one of three tags: **● live** (read fro
 | Storage | psutil disk counters, `/sys/block`, NVMe hwmon, the PCIe link from sysfs, SATA port from the `ataN` → controller mapping |
 | Network | psutil, `/proc/net/wireless`, and NIC hwmon (`r8169`, `mt7921`) matched through the device tree |
 | GPU | NVML (`nvidia-ml-py`, optional) and `amdgpu` sysfs for the iGPU; PCIe throughput to and from the card from NVML |
-| IPC | `/proc/<pid>/fd` maps socket and pipe inodes to processes; `fdinfo` flags give pipe direction. `NETLINK_SOCK_DIAG` (what `ss` uses, unprivileged) gives Unix peers and TCP `tcp_info` byte counts. |
+| IPC | `/proc/<pid>/fd` maps socket and pipe inodes to processes; `fdinfo` flags give pipe direction. `NETLINK_SOCK_DIAG` (what `ss` uses, unprivileged) gives Unix peers and TCP `tcp_info` byte counts. Shared memory comes from memfd and `/dev/shm` fds, from `/proc/<pid>/maps` (a third of the processes per full walk, so segments whose fd was closed after mapping still count), and from `/proc/sysvipc/shm`. Each holder links to one anchor: the SysV creator, or the lowest PID. Container and VM load comes from their cgroup scope (`cpu.stat`, `memory.current`/`max`, `cpu.max`, `pids.current`); network health from `/proc/net/snmp`, `/proc/net/netstat` and `nf_conntrack_count`. |
 | Containers | podman/docker cgroups (`libpod-<id>.scope`), names, IPs and ports from the docker-compatible API socket (only re-read when the set changes), `/proc/<ctr-pid>/net/{dev,tcp}` for each container's own netns |
 | VMs, LAN | VMs from `/run/systemd/machines` and `qemu-system-*` processes, with tap counters via the tun fd's `iff:`. LAN peers from `/proc/net/arp`, the gateway from `/proc/net/route`, reverse DNS on a background thread |
 
@@ -159,9 +176,10 @@ Board profiles live in `src/gputui/boards/`. See the gputui docstring in that pa
 - **No per-slot PCIe counters** on AMD client boards, so M.2, SATA and NIC traffic is the device's own rate and the x1 slots show none. Only the NVIDIA card reports its PCIe throughput.
 - **The die view is schematic.** The CCD/IOD placement under the IHS is approximate. Per-core load and clocks are real.
 - **Footprint, not a model:** the card is drawn as a generic 304 × 61 mm triple-slot outline, since systui doesn't know the card's dimensions. For the real PCB, press `G`.
-- **IPC: no byte counts for Unix sockets or pipes.** They show that a channel exists, not how busy it is. TCP has live rates. Inside a container's own netns only the interface totals are known, not per-connection rates.
+- **IPC: no byte counts for Unix sockets, pipes or shared memory.** They show that a channel exists, not how busy it is. TCP has live rates. Inside a container's own netns only the interface totals are known, not per-connection rates.
 - **IPC: other users' fds need root.** Unprivileged, those processes, and capability-protected ones such as the Wayland compositor, show as one `unreadable` row. `./systui-root` sees them, and it also finds rootless containers through `$SUDO_UID`.
 - **IPC: rootless container mapping is ◐.** Traffic leaves rootless containers through `rootlessport` (published ports) and `pasta`/`slirp4netns` (outbound). Those sockets are charged to a container by matching published ports and remote addresses.
+- **IPC: events are sampled.** A connection that opens and closes between two polls (1 s by default) never shows. A new socket is logged once a full walk has found its process, up to 3 polls late.
 - **IPC: no IPv6 neighbours.** LAN peers come from `/proc/net/arp`, which is IPv4. An IPv6 peer appears only while there is a connection to it.
 
 ## Development

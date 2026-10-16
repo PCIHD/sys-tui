@@ -186,3 +186,76 @@ async def test_cpu_die_and_record():
         await pilot.press("R")
         await pilot.pause(0.2)
         assert app.replay_i == 0
+
+
+@pytest.mark.asyncio
+async def test_ipc_kind_cycle_text_filter_and_jump_to_process():
+    from systui.widgets import IpcFilter, IpcView
+
+    app = SysTuiApp(DemoSource(), interval=0.3, initial_tab="ipc")
+    async with app.run_test(size=(200, 56)) as pilot:
+        await pilot.pause(0.6)
+        table = app.query_one("#ipc-links", DataTable)
+        everything = table.row_count
+        await pilot.press("f", "f")  # all → tcp+udp → unix
+        await pilot.pause(0.2)
+        assert 0 < table.row_count < everything and all(k.kind == "unix" for k in app._ipc_links)
+        assert "unix" in app.query_one(IpcView).panel.status
+        await pilot.press("f", "f", "f", "f")  # → pipe → shm → listen → all
+        await pilot.pause(0.2)
+        assert table.row_count == everything
+        await pilot.press("slash")
+        box = app.query_one(IpcFilter)
+        assert box.display and box.has_focus
+        await pilot.press(*"postgres")
+        await pilot.pause(0.2)
+        assert 0 < table.row_count < everything
+        assert all("ctr:df517a104788" in (k.a, k.b) for k in app._ipc_links)
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+        assert not box.display and box.value == "" and table.row_count == everything
+        assert app.query_one(TabbedContent).active == "ipc"  # Escape did not reach the app
+        view = app.query_one(IpcView)
+        view.focus()
+        view.select("proc:1004")
+        await pilot.press("enter")
+        await pilot.pause(0.5)
+        assert app.query_one(TabbedContent).active == "proc"
+        procs = app.query_one("#procs", DataTable)
+        assert procs.coordinate_to_cell_key(procs.cursor_coordinate).row_key.value == "1004"
+
+
+@pytest.mark.asyncio
+async def test_ipc_level_key_cycles_which_rows_show():
+    from systui.render.ipc import LEVELS
+    from systui.widgets import IpcView
+
+    app = SysTuiApp(DemoSource(), interval=0.3, initial_tab="ipc")
+    async with app.run_test(size=(200, 56)) as pilot:
+        await pilot.pause(0.4)
+        view = app.query_one(IpcView)
+        assert view.panel.level == 0
+        await pilot.press("i")
+        assert view.panel.level == 1
+        await pilot.press(*"i" * (len(LEVELS) - 1))
+        assert view.panel.level == 0
+        await pilot.press("1")
+        await pilot.pause(0.3)
+        await pilot.press("i")  # off the IPC tab the key does nothing
+        assert view.panel.level == 0
+
+
+@pytest.mark.asyncio
+async def test_ipc_events_panel_lists_and_follows_the_selection():
+    from systui.widgets import IpcEvents, IpcView
+
+    app = SysTuiApp(DemoSource(), interval=0.3, initial_tab="ipc")
+    async with app.run_test(size=(200, 56)) as pilot:
+        await pilot.pause(0.6)
+        ev = app.query_one(IpcEvents)
+        text = str(ev.render())
+        assert "code" in text and "93.184.215.14:443" in text and "llm-llamacpp-1" in text
+        app.query_one(IpcView).select("peer:192.168.1.34")
+        await pilot.pause(0.3)
+        text = str(ev.render())
+        assert "laptop" in text and "93.184.215.14" not in text

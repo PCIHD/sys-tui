@@ -4,6 +4,7 @@
 > - **Phase 1 is done.** The `8 IPC` tab ships with this file, and its code is in `telemetry/ipc.py`, `telemetry/sockdiag.py`, `render/ipc.py` and `tests/test_ipc.py`.
 >   - Changes from this plan: rates are `in_bps`/`out_bps`, not `rx`/`tx`. Same-name processes fold into one `group:<name>` row. Arcs are capped unless a node is selected.
 >   - Not yet checked: `./systui-root --tab ipc`, and VM/nspawn detection on a host that has them.
+> - **Phase 1 follow-ups (2026-10-17, branch `ipc-enhance`):** quiet rows and hubs (`i`), kind and text filters (`f`, `/`), Enter → Processes, CPU and memory per node with cgroup limits, kernel network health and a "this machine" strip, an Events log, and shared memory (`shm`) links.
 > - **Phase 2 is not started.** Pick it up from the "Phase 2" section below.
 
 ## Context
