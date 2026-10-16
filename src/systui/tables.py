@@ -103,6 +103,28 @@ def ipc_widths(total: int) -> list[int]:
     return fixed
 
 
+KIND_FILTERS = (None, ("tcp", "udp"), ("unix",), ("pipe",), ("shm",), ("listen",))
+
+
+def ipc_filter(links: list[IpcLink], nodes: dict[str, IpcNode], kinds: tuple[str, ...] | None,
+               text: str = "") -> list[IpcLink]:
+    """Links of the given kinds whose end names, PIDs, paths or ``ip:port`` contain ``text``."""
+    out = [k for k in links if kinds is None or k.kind in kinds]
+    text = text.strip().lower()
+    if not text:
+        return out
+
+    def hay(k: IpcLink) -> str:
+        parts = [k.a_end, k.b_end, k.state, str(k.pid_a or ""), str(k.pid_b or "")]
+        for nid in (k.a, k.b):
+            n = nodes.get(nid)
+            if n is not None:
+                parts += [n.name, n.sub, *map(str, n.pids[:8]), *n.addrs]
+        return " ".join(parts).lower()
+
+    return [k for k in out if text in hay(k)]
+
+
 def ipc_sorted(links: list[IpcLink]) -> list[IpcLink]:
     """Busiest first, then by kind, then by how many channels a row folds."""
     return sorted(links, key=lambda k: (-k.bps, KIND_ORDER.get(k.kind, 9), -k.count))

@@ -15,6 +15,12 @@ TCP routes carry two lanes, using the same convention as the board traces:
 
 Links without byte counters are drawn as steady traces. Positions are sorted by name, not
 traffic, so tiles stay put between polls.
+
+A desktop runs dozens of daemons whose only links go to a hub: a process serving Unix sockets to
+many others, like dbus-broker or pipewire. ``level`` picks which rows show: 0 only processes
+that move bytes or reach outside the list (and hubs), 1 also those with direct Unix/pipe peers,
+2 everything. Rows a selected node talks to always show. A hub's own arcs are drawn only while something is
+selected; its clients carry a ◆ instead.
 """
 
 from __future__ import annotations
@@ -40,6 +46,8 @@ BADGE = {"podman": 0x8F6BD6, "docker": 0x2496ED, "distrobox": 0xE87A3C, "toolbox
          "qemu": 0xFF6B5A, "vm": 0xFF6B5A, "nspawn": 0x6BB8B0}
 ARC = {"unix": 0x7A6BB8, "pipe": 0x4E9A6A, "tcp": 0x4F7FA8, "udp": 0x4F7FA8}
 SELECT = 0x39C5FF
+HUB_MIN = 10  # Unix clients that make a process a hub
+LEVELS = ("talkers", "talkers + peer IPC", "all processes")
 
 
 def short(v: float | None) -> str:
@@ -62,6 +70,8 @@ class IpcMap(Panel):
         self._shown: set[str] = set()  # process rows last time: hysteresis keeps them
         self._phase: dict[str, float] = {}
         self._t: float | None = None
+        self.level = 0  # LEVELS: which process rows show
+        self.status = ""  # the app's filter state, shown in the footer
 
     def members(self, nid: str | None) -> set[str]:
         """Node ids behind a map id: a folded process row stands for all its processes."""
@@ -91,12 +101,13 @@ class IpcMap(Panel):
                 row_of[m.id] = gid
         return rows, row_of
 
-    def _pick_rows(self, rows: list[IpcNode], row_of: dict[str, str], links: list[IpcLink], n: int) -> list[IpcNode]:
-        score: dict[str, float] = {r.id: 0.0 for r in rows}
+    def _pick_rows(self, rows: list[IpcNode], row_of: dict[str, str], links: list[IpcLink], n: int,
+                   pinned: set[str] = frozenset()) -> list[IpcNode]:
+        score: dict[str, float] = {r.id: 100.0 if r.id in pinned else 0.0 for r in rows}
         for k in links:
             for end, other in ((k.a, k.b), (k.b, k.a)):
                 rid = row_of.get(end)
-                if rid is not None:
+                if rid in score:
                     score[rid] += 0.3 * k.count + math.log10(1 + k.bps) + (2.0 if other not in row_of else 0.0)
         for rid in self._shown:
             if rid in score:
@@ -129,6 +140,33 @@ class IpcMap(Panel):
         all_rows, row_of = self._rows(procs)
         focus = self.members(self.selected) | {m for nid in self.highlight for m in self.members(nid)}
 
+        # ---- hubs, quiet rows, and what the selection talks to
+        partners: dict[str, set[str]] = {}  # row → rows it shares a Unix socket or pipe with
+        clients: dict[str, set[str]] = {}  # row → rows connected to its Unix sockets
+        netted: set[str] = set()  # rows with a route out of the process list
+        for k in links:
+            ra, rb = row_of.get(k.a), row_of.get(k.b)
+            if ra is not None and rb is not None:
+                if ra != rb:
+                    partners.setdefault(ra, set()).add(rb)
+                    partners.setdefault(rb, set()).add(ra)
+                    if k.kind == "unix":
+                        clients.setdefault(rb, set()).add(ra)
+            elif (ra or rb) and "host" not in (k.a, k.b):
+                netted.add(ra or rb)
+        hubs = {r for r, c in clients.items() if len(c) >= HUB_MIN}
+        sel_rows = {row_of[m] for m in focus if m in row_of}
+        near = set().union(*(partners.get(r, set()) for r in sel_rows)) - sel_rows
+        pinned = sel_rows | near
+
+        def quiet(r: IpcNode) -> bool:
+            if self.level >= 2 or r.in_bps or r.out_bps or r.id in netted | hubs:
+                return False
+            return self.level == 0 or partners.get(r.id, set()) <= hubs
+
+        hidden = {r.id for r in all_rows if r.id not in pinned and quiet(r)}
+        cand = [r for r in all_rows if r.id not in hidden]
+
         # ---- columns, in cells
         outside = W >= 100 and (peers or wan)
         wan_w = 18 if outside and wan else 0
@@ -144,8 +182,9 @@ class IpcMap(Panel):
 
         # ---- process rows
         avail = bottom - top + 1
-        rows = self._pick_rows(all_rows, row_of, links, avail)
+        rows = self._pick_rows(cand, row_of, links, avail, pinned)
         more = [p for p in procs if row_of[p.id] not in self._shown]
+        n_quiet = sum(row_of[p.id] in hidden for p in more)
         step = 2 if (len(rows) + bool(more)) * 2 <= avail else 1  # a blank row between, when there is room
         slot: dict[str, str] = {}  # node id → its slot on the map
         row_y: dict[str, int] = {}
@@ -295,6 +334,7 @@ class IpcMap(Panel):
         if focus:
             proc_arcs = {p: q for p, q in proc_arcs.items() if focus & q[2]}
         else:
+            proc_arcs = {p: q for p, q in proc_arcs.items() if not (hubs | {"more"}) & set(p)}
             proc_arcs = dict(sorted(proc_arcs.items(), key=lambda kv: -kv[1][0])[:2 * gutter])
         self._arcs(cv, proc_arcs, row_y, lx0, gutter, focus)
         self._arcs(cv, {p: q for p, q in arcs.items() if p[0] in g_y and p[1] in g_y}, g_y, gx0, 3, focus)
@@ -304,11 +344,29 @@ class IpcMap(Panel):
         for k in links:
             for end in {slot.get(k.a), slot.get(k.b)} - {None}:
                 nlinks[end] = nlinks.get(end, 0) + k.count
+        rel: dict[str, dict[str, int]] = {}  # visible partner row → {kind: channels} with the selection
+        for k in links:
+            ra, rb = row_of.get(k.a), row_of.get(k.b)
+            for mine, other in ((ra, rb), (rb, ra)):
+                if mine in sel_rows and other in near:
+                    rel.setdefault(other, {})
+                    rel[other][k.kind] = rel[other].get(k.kind, 0) + k.count
         for r in rows:
-            self._row(cv, r, row_y[r.id], lx0, lx1, bool(self.members(r.id) & focus), nlinks.get(r.id, 0))
+            tag = None
+            if r.id in rel:
+                tag = " ".join(f"{kd}×{c}" if c > 1 else kd for kd, c in sorted(rel[r.id].items()))
+            elif r.id in hubs:
+                tag = f"hub · {len(clients[r.id])} clients"
+            self._row(cv, r, row_y[r.id], lx0, lx1, bool(self.members(r.id) & focus), nlinks.get(r.id, 0),
+                      tag, r.id not in hubs and bool(partners.get(r.id, set()) & hubs))
         if more:
             yy = row_y["more"]
-            cv.put_text(lx0 + 1, yy, f"+{len(more)} more processes"[: list_w - 1], ch.DIM)
+            n_over = len(more) - n_quiet
+            if n_over and n_quiet:
+                chip = f"+{n_over} more · +{n_quiet} quiet (i)"
+            else:
+                chip = f"+{n_quiet} quiet processes (i)" if n_quiet else f"+{n_over} more processes"
+            cv.put_text(lx0 + 1, yy, chip[: list_w - 1], ch.DIM)
         for g in guests:
             if g.id in g_y:
                 self._guest(cv, g, g_y[g.id], gx0, gx1, g.id in focus)
@@ -324,26 +382,34 @@ class IpcMap(Panel):
         head = (f"{c.get('tcp', 0)} tcp · {c.get('udp', 0)} udp · {c.get('unix', 0)} unix · {c.get('pipe', 0)} pipe"
                 f" · {c.get('listen', 0)} listening · {len(guests)} guests · {len(peers)} LAN peers")
         cv.put_text(1, 0, head[: W - 2], 0xC9D1D9, None, True)
-        legend = "▲ towards this machine ▼ away  ━ unix ━ pipe"
+        legend = "▲ towards this machine ▼ away (B/s)  ━ unix ━ pipe"
         if len(head) + len(legend) + 4 <= W:
             ch.text_right(cv, W - 1, 0, legend, ch.DIM)
-        foot = ipc.note or "click a node · Tab cycles"
+        foot = "  ·  ".join(x for x in (f"i: {LEVELS[self.level]}", self.status,
+                                         ipc.note or "click a node · Tab cycles") if x)
         cv.put_text(1, Hc - 1, foot[: W - 2], ch.DIM)
 
     # --------------------------------------------------------------------- pieces
-    def _row(self, cv: Canvas, p: IpcNode, y: int, x0: int, x1: int, sel: bool, nlinks: int) -> None:
+    def _row(self, cv: Canvas, p: IpcNode, y: int, x0: int, x1: int, sel: bool, nlinks: int,
+             tag: str | None = None, hub_client: bool = False) -> None:
+        """One process row. ``tag`` replaces the right-hand text: how the row relates to the
+        selection, or a hub's client count. ``hub_client`` adds a ◆ after the name."""
         acc = ACCENT["process"] if p.id != "hidden" else ch.DIM
         cv.fill(x0, y * 2, x1, y * 2 + 2, mix(TILE, acc, 0.22 if sel else 0.06 + 0.04 * (y % 2)))
         cv.fill(x0, y * 2, x0 + 1, y * 2 + 2, SELECT if sel else acc)
-        r = rates(p.in_bps, p.out_bps) if (p.in_bps or p.out_bps) else f"{nlinks} link{'s' * (nlinks != 1)}"
-        room = x1 - x0 - 2 - len(r) - 1
-        cv.put_text(x0 + 1, y, p.name[:max(1, room)], TEXT if p.id != "hidden" else SUB, None, sel)
-        if p.in_bps or p.out_bps:
+        measured = bool(p.in_bps or p.out_bps) and tag is None
+        r = rates(p.in_bps, p.out_bps) if measured else tag or f"{nlinks} link{'s' * (nlinks != 1)}"
+        room = x1 - x0 - 2 - len(r) - 1 - 2 * hub_client
+        name = p.name[:max(1, room)]
+        cv.put_text(x0 + 1, y, name, TEXT if p.id != "hidden" else SUB, None, sel)
+        if hub_client:
+            cv.put_text(x0 + 2 + len(name), y, "◆", ARC["unix"])
+        if measured:
             k = r.index("▼")
             ch.text_right(cv, x1 - 1, y * 2, r, ch.IN)
             ch.text_right(cv, x1 - 1, y * 2, r[k:], ch.OUT)
         elif room > 0:
-            ch.text_right(cv, x1 - 1, y * 2, r, ch.DIM)
+            ch.text_right(cv, x1 - 1, y * 2, r, shade(ARC["unix"], 1.6) if tag and not tag.startswith("hub") else ch.DIM)
 
     def _tile(self, cv: Canvas, box, acc: int, sel: bool) -> None:
         x0, y0, x1, y1 = box

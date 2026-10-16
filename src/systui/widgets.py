@@ -12,7 +12,7 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from . import bindings as B
 from .boards import Match
@@ -322,6 +322,7 @@ class IpcView(PanelView, can_focus=True):
     BINDINGS = [
         Binding("tab", "cycle(1)", "Next node", show=False),
         Binding("shift+tab", "cycle(-1)", show=False),
+        Binding("enter", "app.ipc_jump", "To process", show=False),
     ]
 
     class Selected(Message):
@@ -363,6 +364,17 @@ class IpcView(PanelView, can_focus=True):
 
             n = ipc_node(ipc, nid, self.panel.members(nid))
         self.tooltip = f"{n.name} — {n.runtime or n.kind}" if n else None
+
+
+class IpcFilter(Input):
+    """Text filter over the IPC links table. Escape clears it and gives focus back."""
+
+    BINDINGS = [Binding("escape", "close", show=False)]
+
+    def action_close(self) -> None:
+        self.value = ""
+        self.display = False
+        self.app.query_one("#ipc-links").focus()
 
 
 class IpcDetail(Static):

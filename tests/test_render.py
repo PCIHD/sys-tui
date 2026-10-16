@@ -237,6 +237,7 @@ def test_ipc_map_renders_and_places_every_node_once(size):
 
     w, h = size
     m = IpcMap()
+    m.level = 2  # every process row, quiet or not
     for t in (0.1, 0.4):
         cv = m.canvas(w, h)
         m.draw(cv, SNAP, HIST, t)
@@ -271,6 +272,7 @@ def test_ipc_map_keeps_rows_stable_and_folds_the_rest():
     links = [IpcLink(f"proc:{i}", f"proc:{i + 1}", "unix") for i in range(39)]
     snap = SystemSnapshot(t=0.0, ipc=IpcStat(nodes, links, {"unix": 39}))
     m = IpcMap()
+    m.level = 1  # a chain of direct peers: none of them is quiet at level 1
     cv = m.canvas(120, 20)
     m.draw(cv, snap, History(), 0.0)
     rows = [nid for nid in m.boxes if nid.startswith("proc:")]
@@ -302,3 +304,75 @@ def test_ipc_map_folds_same_name_processes_into_one_row():
     assert (g.name, g.pids, g.in_bps) == ("claude ×2", [1, 2], 150.0)
     rows = {r.key: r.value for r in ipc_rows(ipc, "group:claude", None, m.members("group:claude"))}
     assert rows["Links"] == "2 tcp · 1 unix" and "dbus (unix)" in rows["Talks to"]
+
+
+def _hub_snapshot():
+    """A talker, a hub with 12 idle clients, and an idle pipe pair."""
+    from systui.telemetry import IpcLink, IpcNode, IpcStat, SystemSnapshot
+    from systui.telemetry.ipc import rollup
+
+    nodes = [IpcNode("host", "host", "box"), IpcNode("wan", "wan", "Internet"),
+             IpcNode("proc:1", "process", "talker", pids=[1]), IpcNode("proc:100", "process", "dbus", pids=[100]),
+             IpcNode("proc:20", "process", "writer", pids=[20]), IpcNode("proc:21", "process", "reader", pids=[21])]
+    nodes += [IpcNode(f"proc:{i}", "process", f"client{i:02d}", pids=[i]) for i in range(2, 14)]
+    links = [IpcLink("proc:1", "wan", "tcp", in_bps=100.0, out_bps=10.0), IpcLink("proc:20", "proc:21", "pipe")]
+    links += [IpcLink(f"proc:{i}", "proc:100", "unix", b_end="/run/user/1000/bus") for i in range(2, 14)]
+    rollup({n.id: n for n in nodes}, links)
+    return SystemSnapshot(t=0.0, ipc=IpcStat(nodes, links, {"tcp": 1, "pipe": 1, "unix": 12}))
+
+
+def _text(cv):
+    return "".join(item[0] for _, item in sorted(cv.text.items(), key=lambda kv: (kv[0][1], kv[0][0])))
+
+
+def test_ipc_map_hides_quiet_rows_by_level():
+    from systui.render.ipc import IpcMap
+
+    snap = _hub_snapshot()
+    m = IpcMap()
+    cv = m.canvas(140, 40)
+    m.draw(cv, snap, History(), 0.0)
+    rows = {nid for nid in m.boxes if nid.startswith("proc:")}
+    assert rows == {"proc:1", "proc:100"}  # the talker and the hub
+    text = _text(cv)
+    assert "hub · 12 clients" in text and "+14 quiet processes (i)" in text and "i: talkers" in text
+    m.level = 1
+    m.draw(m.canvas(140, 40), snap, History(), 0.1)
+    assert {nid for nid in m.boxes if nid.startswith("proc:")} == {"proc:1", "proc:100", "proc:20", "proc:21"}
+    m.level = 2
+    m.draw(m.canvas(140, 40), snap, History(), 0.2)
+    assert {f"proc:{i}" for i in range(2, 14)} <= set(m.boxes)
+
+
+def test_ipc_map_selection_brings_in_its_partners_with_labels():
+    from systui.render.ipc import IpcMap
+
+    snap = _hub_snapshot()
+    m = IpcMap()
+    m.selected = "proc:20"
+    cv = m.canvas(140, 40)
+    m.draw(cv, snap, History(), 0.0)
+    assert "proc:21" in m.boxes and "proc:2" not in m.boxes
+    assert "pipe" in _text(cv)
+    m.selected = "proc:100"
+    m.draw(m.canvas(140, 40), snap, History(), 0.1)
+    assert {f"proc:{i}" for i in range(2, 14)} <= set(m.boxes)
+
+
+def test_ipc_map_draws_hub_arcs_only_while_something_is_selected():
+    from systui.canvas import mix
+    from systui.render.ipc import FRAME, IpcMap
+
+    inside = mix(0x0D1117, FRAME, 0.05)  # the machine frame's fill
+
+    def arc_pixels(m):
+        cv = m.canvas(140, 40)
+        m.draw(cv, _hub_snapshot(), History(), 0.0)
+        x_rows = min(b[0] for nid, b in m.boxes.items() if nid.startswith("proc:"))
+        return sum(cv.get(x, y) != inside for x in range(1, x_rows) for y in range(8, 70))
+
+    m = IpcMap()
+    m.level = 2
+    idle = arc_pixels(m)
+    m.selected = "proc:100"
+    assert arc_pixels(m) > idle

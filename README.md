@@ -43,6 +43,8 @@ The best terminal is a true-colour one that is at least about 160×45.
 | `1`–`8` | Tabs: Board · CPU · Memory · Storage · Network · Processes · Sensors · IPC |
 | mouse / `Tab` / arrows | Select a board part; the side panel shows everything known about it |
 | `8`, then mouse / `Tab` | IPC map: select a process, container, VM or LAN peer to narrow the links table. Enter on a link lights both ends |
+| `i` · `f` · `/` (IPC) | Process rows: talkers → + direct peers → all · link kinds: all → tcp+udp → unix → pipe → shm → listen · text filter on the links table (Esc clears) |
+| Enter on the IPC map | Jump to the selected node's busiest process on the Processes tab |
 | `h` | Board overlay: live animation → thermal → off |
 | `l` · `c` | Labels on/off · graphics-card footprint on/off |
 | `g` / `G` / Enter on the card | Fly into the GPU. Top tabs become Card · PCB · Back · Die · Cores. Tables underneath. Esc restores Board · CPU · … |
@@ -58,7 +60,8 @@ The best terminal is a true-colour one that is at least about 160×45.
 Tab `8` shows the channels between processes, containers, VMs and the LAN (`uv run systui --tab ipc`).
 
 - **The machine frame.** It holds this host's busiest processes, one row each. Same-name processes fold into `name ×n`.
-- **Arcs.** Unix sockets (violet) and pipes (green) between processes are drawn as arcs in the left gutter. With nothing selected, only the busiest few are drawn; selecting a node draws all of its arcs.
+- **Quiet rows and hubs.** A process serving Unix sockets to 10 or more others is a hub (dbus-broker, pipewire, the compositor). It shows `hub · N clients`, and its clients carry a ◆ in place of an arc. By default only talkers show: processes that move bytes or reach a container, VM, peer or the Internet, plus the hubs. `i` adds processes with direct Unix or pipe peers, then everything. The rest fold into `+N quiet processes`.
+- **Arcs.** Unix sockets (violet) and pipes (green) between processes are drawn as arcs in the left gutter. With nothing selected, only the busiest few are drawn, and none to a hub. Selecting a node brings in every process it talks to, draws all of its arcs, and labels each partner with the link kinds (`unix×3`).
 - **Lanes.** Lanes in the channel carry TCP/UDP to each container or VM tile.
 - **The NIC.** Everything that leaves the machine goes through the NIC on the frame's right edge. A trunk runs from it to the LAN peers, and from the router to the Internet.
 
