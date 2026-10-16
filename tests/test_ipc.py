@@ -384,3 +384,98 @@ def test_live_tracker_runs_on_this_machine():
         t.close()
     assert s.node("host") is not None
     assert all(k.a for k in s.links)
+
+
+# ------------------------------------------------------------------------- sys info
+SNMP = """Ip: Forwarding DefaultTTL
+Ip: 1 64
+Tcp: RtoAlgorithm RtoMin RetransSegs OutRsts
+Tcp: 1 200 4711 30
+Udp: InDatagrams InErrors
+Udp: 100 2
+"""
+NETSTAT = """TcpExt: SyncookiesSent ListenOverflows ListenDrops
+TcpExt: 0 5 7
+"""
+
+
+def test_parse_snmp_pairs_header_and_value_lines():
+    from systui.telemetry.netstat import parse_snmp
+
+    d = parse_snmp(SNMP) | parse_snmp(NETSTAT)
+    assert d["Tcp.RetransSegs"] == 4711 and d["Tcp.OutRsts"] == 30 and d["Udp.InErrors"] == 2
+    assert d["TcpExt.ListenDrops"] == 7 and d["Ip.DefaultTTL"] == 64
+    assert parse_snmp("") == {} and parse_snmp("garbage\n") == {}
+
+
+def test_kernel_counters_become_rates_and_tcp_states_are_counted(root):
+    _w(root, "proc/net/snmp", SNMP)
+    _w(root, "proc/net/netstat", NETSTAT)
+    _w(root, "proc/sys/net/netfilter/nf_conntrack_count", "812\n")
+    _w(root, "proc/sys/net/netfilter/nf_conntrack_max", "262144\n")
+    socks = [InetSock(0, "tcp", "192.168.1.10", 40000 + i, "1.1.1.1", 443, st, 1000)
+             for i, st in enumerate(["ESTAB", "ESTAB", "TIME-WAIT", "CLOSE-WAIT"])]
+    t = tracker(root, FakeDiag(inet=socks))
+    s = t.collect(0.0)
+    assert s.kernel["Tcp.RetransSegs"] is None and s.kernel["conntrack"] == 812  # no rate before a 2nd sample
+    assert s.tcp_states == {"ESTAB": 2, "TIME-WAIT": 1, "CLOSE-WAIT": 1}
+    _w(root, "proc/net/snmp", SNMP.replace("4711", "4721"))
+    s = t.collect(2.0)
+    assert s.kernel["Tcp.RetransSegs"] == 5.0 and s.kernel["TcpExt.ListenDrops"] == 0.0
+    assert s.kernel["conntrack_max"] == 262144
+
+
+def test_container_cpu_and_memory_come_from_its_scope_not_the_leaf(root):
+    scope = f"user.slice/user@1000.service/user.slice/libpod-{CTR_A}.scope"
+    _proc(root, 800, "postgres", cgroup=f"0::/{scope}/container", ns=2)
+    base = f"sys/fs/cgroup/{scope}"
+    _w(root, f"{base}/cpu.stat", "usage_usec 1000000\nuser_usec 900000\n")
+    _w(root, f"{base}/memory.current", "73400320\n")
+    _w(root, f"{base}/memory.max", "max\n")
+    _w(root, f"{base}/cpu.max", "200000 100000\n")
+    _w(root, f"{base}/pids.current", "10\n")
+    _w(root, f"{base}/container/memory.current", "1\n")  # the nested leaf: not what we want
+    t = tracker(root, FakeDiag())
+    t.collect(0.0)
+    _w(root, f"{base}/cpu.stat", "usage_usec 1500000\n")
+    n = t.collect(1.0).node(f"ctr:{CTR_A[:12]}")
+    assert n.cpu == pytest.approx(50.0) and n.rss == 73400320 and n.mem_limit is None
+    assert n.cpu_limit == 2.0 and n.pids_n == 10 and n.unit == f"libpod-{CTR_A}.scope"
+
+
+def test_process_nodes_get_fds_and_unit(root):
+    _proc(root, 100, "bash", {1: "pipe:[500]", 2: "/dev/null"}, {1: "01"},
+          cgroup="0::/user.slice/user@1000.service/app.slice/app-org.kde.konsole-123.scope")
+    _proc(root, 101, "grep", {0: "pipe:[500]"}, {0: "00"})
+    n = tracker(root, FakeDiag()).collect(0.0).node("proc:100")
+    assert n.fds == 2 and n.unit == "app-org.kde.konsole-123.scope"
+
+
+def test_annotate_ipc_joins_the_process_table_and_sums_guests():
+    from systui.telemetry import ProcStat, annotate_ipc
+
+    nodes = [IpcNode("proc:1", "process", "a", pids=[1]),
+             IpcNode("ctr:x", "container", "db", pids=[2, 3]),
+             IpcNode("ctr:y", "container", "web", pids=[4], cpu=12.0, rss=100)]
+    by_pid = {1: ProcStat(1, "a", cpu=5.0, rss=10, threads=2, started=50.0),
+              2: ProcStat(2, "p", cpu=1.0, rss=20, threads=1, started=40.0),
+              3: ProcStat(3, "q", cpu=2.0, rss=30, threads=3, started=45.0),
+              4: ProcStat(4, "w", cpu=99.0, rss=999, threads=1)}
+    ipc = IpcStat(nodes, [])
+    annotate_ipc(ipc, by_pid)
+    a, x, y = ipc.nodes
+    assert (a.cpu, a.rss, a.threads, a.started, a.res_prov) == (5.0, 10, 2, 50.0, "live")
+    assert (x.cpu, x.rss, x.threads, x.started, x.res_prov) == (3.0, 50, 4, 40.0, "derived")
+    assert (y.cpu, y.rss, y.res_prov) == (12.0, 100, "live")  # its cgroup already answered
+
+
+def test_detail_rows_show_resources_and_host_health():
+    from systui.tables import ipc_rows
+
+    ipc = DemoSource().collect().ipc
+    rows = {r.key: r.value for r in ipc_rows(ipc, "ctr:df517a104788")}
+    assert "% of a thread" in rows["CPU"] and " of " in rows["Memory"] and rows["Unit"].startswith("libpod-")
+    host = {r.key: r.value for r in ipc_rows(ipc, "host")}
+    assert "ESTAB" in host["TCP states"] and "retrans" in host["Net errors"] and "of" in host["Conntrack"]
+    proc = {r.key: r.value for r in ipc_rows(ipc, "proc:1000")}
+    assert "Open fds" in proc and proc["Started"].endswith("ago")

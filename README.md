@@ -73,10 +73,16 @@ Traffic follows the board's convention:
 Links without byte counters are steady traces. Unix sockets and pipes have none; neither do sockets inside a container's netns.
 
 Below the map, a table lists every channel: kind, both ends with pid and address, state, ▲▼ rate, and a ● live / ◐ derived tag. Pipes and socketpairs between the same two processes fold into one row (`unix ×3`). The side panel shows the selected node:
-- a process: command line
-- a container: image, status, IPs, published ports and netns
-- a VM: its tap
+- a process: command line, CPU, memory, threads, open fds, start time and systemd unit
+- a container: image, status, IPs, published ports, netns, and CPU, memory and task count against its cgroup limits
+- a VM: its tap, and the same cgroup figures when machined runs it
 - a LAN peer: MAC, reverse-DNS name and whether it is the gateway
+- this machine: TCP states, the kernel's network error rates (retransmits, resets, listen drops, …) and conntrack use
+
+Load shows on the map too:
+- A process row is tinted by its CPU, from left to right.
+- A guest tile shows its CPU and memory.
+- When there is room under the LAN peers, a "this machine" strip shows CPU, memory, NIC traffic, TCP states and error rates. A CLOSE-WAIT count is orange, because it usually means an app is not closing its sockets.
 
 The walk is cheap but not free. It reads every `/proc/<pid>/fd`, at about 30 ms here. So it runs only while the tab is showing, does a full pass every 3rd poll, and only re-reads TCP byte counters in between.
 
@@ -108,7 +114,7 @@ Each value in the detail panel carries one of three tags: **● live** (read fro
 | Storage | psutil disk counters, `/sys/block`, NVMe hwmon, the PCIe link from sysfs, SATA port from the `ataN` → controller mapping |
 | Network | psutil, `/proc/net/wireless`, and NIC hwmon (`r8169`, `mt7921`) matched through the device tree |
 | GPU | NVML (`nvidia-ml-py`, optional) and `amdgpu` sysfs for the iGPU; PCIe throughput to and from the card from NVML |
-| IPC | `/proc/<pid>/fd` maps socket and pipe inodes to processes; `fdinfo` flags give pipe direction. `NETLINK_SOCK_DIAG` (what `ss` uses, unprivileged) gives Unix peers and TCP `tcp_info` byte counts. |
+| IPC | `/proc/<pid>/fd` maps socket and pipe inodes to processes; `fdinfo` flags give pipe direction. `NETLINK_SOCK_DIAG` (what `ss` uses, unprivileged) gives Unix peers and TCP `tcp_info` byte counts. Container and VM load comes from their cgroup scope (`cpu.stat`, `memory.current`/`max`, `cpu.max`, `pids.current`); network health from `/proc/net/snmp`, `/proc/net/netstat` and `nf_conntrack_count`. |
 | Containers | podman/docker cgroups (`libpod-<id>.scope`), names, IPs and ports from the docker-compatible API socket (only re-read when the set changes), `/proc/<ctr-pid>/net/{dev,tcp}` for each container's own netns |
 | VMs, LAN | VMs from `/run/systemd/machines` and `qemu-system-*` processes, with tap counters via the tun fd's `iff:`. LAN peers from `/proc/net/arp`, the gateway from `/proc/net/route`, reverse DNS on a background thread |
 

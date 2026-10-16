@@ -211,7 +211,30 @@ def demo_ipc(t: float, hostname: str) -> IpcStat:
     from .ipc import rollup
 
     rollup({n.id: n for n in nodes}, links)
+    # resources: processes as the process table would give them, guests from their cgroup
+    wall = time.time()
+    res = {"firefox": (38 * web + 4, 2.1e9, 112, 160), "python3": (90 * llm + 2, 6.4e8, 14, 23),
+           "gnome-shell": (6.0, 3.1e8, 31, 88), "Xwayland": (2.0, 1.2e8, 9, 40), "pipewire": (1.5, 3.0e7, 4, 61),
+           "code": (12 * ssh + 3, 1.4e9, 46, 210), "dbus-broker": (0.2, 6e6, 1, 70), "sshd": (0.4, 9e6, 1, 12)}
+    for k, n in enumerate(x for x in nodes if x.kind == "process"):
+        n.cpu, n.rss, n.threads, n.fds = res[n.name]
+        n.started, n.unit = wall - 3600 * (k + 1) - 427, f"app-{n.name}-{n.pids[0]}.scope"
+    guest_res = {"ctr:df517a104788": (3 + 40 * llm, 7.3e7, 2 * 2**30, None, 10, 25 * 3600),
+                 "ctr:44254bc720fd": (100 + 700 * llm, 9.6e9, None, 8.0, 46, 3 * 3600),
+                 "ctr:9a1fd0c2be11": (1 + 20 * web ** 3, 4.1e8, None, None, 31, 50 * 3600),
+                 "vm:win11": (60 + 140 * _wave(t, 23, 2.0) ** 4, 8.6e9, 8 * 2**30, 4.0, 3, 5 * 3600)}
+    for n in nodes:
+        if n.id in guest_res:
+            n.cpu, n.rss, n.mem_limit, n.cpu_limit, n.pids_n, up = guest_res[n.id]
+            n.started = wall - up
+            n.unit = (f"libpod-{n.id[4:]}0b9e5f1c2d7a.scope" if n.kind == "container"
+                      else "machine-qemu\\x2d1\\x2dwin11.scope")
     counts: dict[str, int] = {}
     for k in links:
         counts[k.kind] = counts.get(k.kind, 0) + k.count
-    return IpcStat(nodes, links, counts, "demo data")
+    kernel = {"Tcp.RetransSegs": 0.4 + 6 * ssh, "Tcp.OutRsts": 0.2, "Tcp.EstabResets": 0.0, "Tcp.AttemptFails": 0.0,
+              "Tcp.InErrs": 0.0, "TcpExt.ListenOverflows": 0.0, "TcpExt.ListenDrops": 0.0,
+              "TcpExt.TCPTimeouts": 0.1 * ssh, "Udp.InErrors": 0.0, "Udp.RcvbufErrors": 0.0,
+              "conntrack": 812.0, "conntrack_max": 262144.0}
+    states = {"ESTAB": 23, "LISTEN": 9, "TIME-WAIT": 41, "CLOSE-WAIT": 1}
+    return IpcStat(nodes, links, counts, "demo data", 0.0, kernel, states)

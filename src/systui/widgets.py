@@ -333,7 +333,7 @@ class IpcView(PanelView, can_focus=True):
     def node_at(self, x: int, y: int) -> str | None:
         for nid, (x0, y0, x1, y1) in getattr(self.panel, "boxes", {}).items():
             if x0 <= x < x1 and y0 <= y < y1:
-                return nid
+                return nid.split("#")[0]  # "host#strip": a second box for the same node
         return None
 
     def select(self, nid: str | None) -> None:
@@ -343,7 +343,7 @@ class IpcView(PanelView, can_focus=True):
         self.post_message(self.Selected(nid))
 
     def action_cycle(self, step: int) -> None:
-        order = list(getattr(self.panel, "boxes", {}))
+        order = list(dict.fromkeys(nid.split("#")[0] for nid in getattr(self.panel, "boxes", {})))
         if not order:
             return
         i = order.index(self.panel.selected) if self.panel.selected in order else -1

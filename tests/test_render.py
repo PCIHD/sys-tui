@@ -376,3 +376,30 @@ def test_ipc_map_draws_hub_arcs_only_while_something_is_selected():
     idle = arc_pixels(m)
     m.selected = "proc:100"
     assert arc_pixels(m) > idle
+
+
+def test_ipc_map_host_strip_only_when_there_is_room():
+    from systui.render.ipc import IpcMap
+
+    m = IpcMap()
+    cv = m.canvas(160, 50)
+    m.draw(cv, SNAP, HIST, 0.0)
+    assert "host#strip" in m.boxes
+    text = _text(cv)
+    assert "this machine" in text and "conntrack 812 of 262k" in text and "1 close-wait" in text
+    x0, y0, x1, y1 = m.boxes["host#strip"]
+    assert y1 - y0 <= 9 and x1 <= 160
+    m.draw(m.canvas(90, 40), SNAP, HIST, 0.1)  # no room outside the frame
+    assert "host#strip" not in m.boxes
+
+
+def test_ipc_map_guest_tiles_show_cpu_and_memory():
+    from systui.render.ipc import IpcMap
+
+    m = IpcMap()
+    cv = m.canvas(170, 44)
+    m.draw(cv, SNAP, HIST, 0.0)
+    import re
+
+    assert "70M" in _text(cv)  # llm-litellm-db-1's memory.current
+    assert re.search(r"\d{3}% 9G", _text(cv))  # llama.cpp: more than one thread's worth of CPU

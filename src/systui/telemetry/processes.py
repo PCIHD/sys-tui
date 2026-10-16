@@ -10,7 +10,7 @@ import psutil
 from . import ProcStat, Rates
 
 ATTRS = ["pid", "name", "username", "cpu_percent", "memory_info", "memory_percent", "num_threads",
-         "status", "io_counters", "cmdline", "cpu_num"]
+         "status", "io_counters", "cmdline", "cpu_num", "create_time"]
 
 
 def _disks(p) -> list[str]:
@@ -35,6 +35,7 @@ class ProcTracker:
     def __init__(self, keep: int = 200) -> None:
         self.keep = keep
         self.rates = Rates()
+        self.by_pid: dict[int, ProcStat] = {}  # every process, before the cut to ``keep``
 
     def collect(self, now: float) -> list[ProcStat]:
         out = []
@@ -68,8 +69,9 @@ class ProcTracker:
             out.append(ProcStat(pid, info.get("name") or "?", info.get("username") or "",
                                 float(cpu), rss, float(mem_pct), info.get("num_threads") or 0,
                                 info.get("status") or "", io_bps, cmd, last, disks=disks,
-                                io_read_bps=rd, io_write_bps=wr))
+                                io_read_bps=rd, io_write_bps=wr, started=info.get("create_time")))
         for k in [k for k in self.rates.prev if int(k[1:].split(":")[0]) not in alive]:
             del self.rates.prev[k]
+        self.by_pid = {p.pid: p for p in out}
         out.sort(key=lambda s: (s.cpu, s.rss), reverse=True)
         return out[: self.keep]

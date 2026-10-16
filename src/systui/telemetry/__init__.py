@@ -345,6 +345,7 @@ class ProcStat:
     disks: list[str] = field(default_factory=list)
     io_read_bps: float | None = None
     io_write_bps: float | None = None
+    started: float | None = None  # epoch seconds
 
 
 @dataclass
@@ -370,6 +371,17 @@ class IpcNode:
     dns: str = ""  # reverse-DNS name (peers), derived
     router: bool = False
     iface: str = ""  # tap of a VM, NIC of a peer
+    # resources: processes from the process table, containers and VMs from their cgroup
+    cpu: float | None = None  # % of one thread
+    rss: int | None = None  # bytes; a cgroup's memory.current
+    threads: int | None = None
+    fds: int | None = None
+    started: float | None = None  # epoch seconds
+    unit: str = ""  # systemd unit or scope, from the cgroup path
+    mem_limit: int | None = None  # cgroup memory.max
+    cpu_limit: float | None = None  # cgroup cpu.max, in cores
+    pids_n: int | None = None  # cgroup pids.current
+    res_prov: str = "live"  # derived when a guest's figures are summed from its PIDs
 
 
 @dataclass
@@ -404,6 +416,8 @@ class IpcStat:
     counts: dict[str, int] = field(default_factory=dict)  # per link kind
     note: str = ""  # what is hidden and why
     age_s: float = 0.0  # since the last full process walk
+    kernel: dict[str, float | None] = field(default_factory=dict)  # netstat counters per second, conntrack
+    tcp_states: dict[str, int] = field(default_factory=dict)  # this netns's TCP sockets by state
 
     def node(self, nid: str) -> IpcNode | None:
         return next((n for n in self.nodes if n.id == nid), None)
@@ -555,6 +569,8 @@ class LinuxSource:
             _annotate_procs(snap)
         if self.want_ipc:
             snap.ipc = self.ipc.collect(now)
+            if self.procs is not None:
+                annotate_ipc(snap.ipc, self.procs.by_pid)
         return snap
 
     def close(self) -> None:
@@ -585,6 +601,27 @@ def _annotate_procs(snap: SystemSnapshot) -> None:
         proc.gpu = True
         proc.gpu_vram = gp.vram_bytes
         proc.gpu_kind = gp.kind
+
+
+def annotate_ipc(ipc: IpcStat, by_pid: dict[int, ProcStat]) -> None:
+    """CPU, memory, threads and start time from the process table onto the IPC nodes. A guest
+    whose cgroup was unreadable gets the sum over its PIDs instead, tagged derived."""
+    for n in ipc.nodes:
+        if n.kind not in ("process", "container", "vm"):
+            continue
+        ps = [by_pid[p] for p in n.pids if p in by_pid]
+        if not ps:
+            continue
+        n.threads = sum(p.threads for p in ps)
+        starts = [p.started for p in ps if p.started]
+        n.started = n.started or (min(starts) if starts else None)
+        if n.kind == "process":
+            n.cpu, n.rss = sum(p.cpu for p in ps), sum(p.rss for p in ps)
+            continue
+        if n.cpu is None:
+            n.cpu, n.res_prov = sum(p.cpu for p in ps), "derived"
+        if n.rss is None:
+            n.rss, n.res_prov = sum(p.rss for p in ps), "derived"
 
 
 def _uptime(fs: SysFS) -> float:

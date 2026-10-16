@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from . import IpcLink, IpcNode, IpcStat, Rates, SysFS
-from . import sockdiag
+from . import netstat, sockdiag
 from .sockdiag import InetSock, UnixSock
 
 CTR_CGROUP = re.compile(r"(libpod-|docker-|/docker/)([0-9a-f]{64})")
@@ -57,6 +57,7 @@ class CtrMeta:
     networks: list[str] = field(default_factory=list)
     ports: list[tuple[str, int, int, str]] = field(default_factory=list)  # host ip, host port, ctr port, proto
     netmode: str = ""
+    created: float | None = None  # epoch seconds
 
 
 def parse_containers(items, engine: str) -> dict[str, CtrMeta]:
@@ -75,7 +76,8 @@ def parse_containers(items, engine: str) -> dict[str, CtrMeta]:
                     it.get("Status") or it.get("State") or "", runtime,
                     [v["IPAddress"] for v in nets.values() if v.get("IPAddress")],
                     [v["Gateway"] for v in nets.values() if v.get("Gateway")], sorted(nets),
-                    netmode=(it.get("HostConfig") or {}).get("NetworkMode") or "")
+                    netmode=(it.get("HostConfig") or {}).get("NetworkMode") or "",
+                    created=it.get("Created") if isinstance(it.get("Created"), (int, float)) else None)
         for p in it.get("Ports") or []:
             if p.get("PublicPort"):
                 m.ports.append((p.get("IP") or "0.0.0.0", int(p["PublicPort"]), int(p.get("PrivatePort") or 0),
@@ -148,6 +150,33 @@ def netdev_bytes(text: str) -> tuple[int, int] | None:
         except ValueError:
             continue
     return (rx, tx) if seen else None
+
+
+def scope_of(cgroup: str, needle: str) -> str:
+    """The cgroup path down to the component containing ``needle``. For a container that is its
+    ``libpod-<id>.scope``, not podman 5's nested ``…/container`` leaf, which undercounts."""
+    parts = cgroup.split("/")
+    for i, c in enumerate(parts):
+        if needle and needle in c:
+            return "/".join(parts[:i + 1])
+    return ""
+
+
+def unit_of(cgroup: str) -> str:
+    """The innermost systemd unit in a cgroup path: ``app-…-1234.scope``, ``foo.service``."""
+    for c in reversed(cgroup.split("/")):
+        if c.endswith((".scope", ".service")):
+            return c
+    return cgroup.rsplit("/", 1)[-1]
+
+
+def parse_cpu_max(text: str | None) -> float | None:
+    """cgroup ``cpu.max`` (``"200000 100000"`` or ``"max 100000"``) → cores, None if unlimited."""
+    f = (text or "").split()
+    try:
+        return int(f[0]) / int(f[1]) if len(f) == 2 and f[0] != "max" else None
+    except (ValueError, ZeroDivisionError):
+        return None
 
 
 def qemu_name(argv: list[str]) -> str:
@@ -275,6 +304,7 @@ class _Proc:
     engine: str = ""  # podman | docker | lxc
     cgroup: str = ""
     tun: list[str] = field(default_factory=list)  # tap interfaces behind /dev/net/tun fds
+    nfd: int = 0
 
 
 @dataclass
@@ -290,6 +320,7 @@ class _Guest:
     iface: str = ""
     sub: str = ""
     socks: list[InetSock] = field(default_factory=list)  # its own netns' sockets
+    cgroup: str = ""  # its scope under /sys/fs/cgroup
 
 
 @dataclass
@@ -442,6 +473,7 @@ class IpcTracker:
                 tun = []
                 with fds:
                     for f in fds:
+                        p.nfd += 1
                         try:
                             t = os.readlink(f.path)
                         except OSError:
@@ -515,6 +547,7 @@ class IpcTracker:
             runtime = meta.runtime if meta else procs[pids[0]].engine
             g = _Guest(nid, "container", meta.name if meta else (cid[4:] if lxc else cid[:12]), runtime, sorted(pids),
                        min(pids), meta=meta, sub=meta.image if meta else "")
+            g.cgroup = scope_of(procs[min(pids)].cgroup, f"lxc.payload.{cid[4:]}" if lxc else cid)
             guests[nid] = g
         for path in self.fs.glob("run/systemd/machines/*"):
             if ":" in path.name:
@@ -530,7 +563,8 @@ class IpcTracker:
             except ValueError:
                 leader = pids[0] if pids else None
             guests[nid] = _Guest(nid, "vm" if vm else "container", path.name, "vm" if vm else "nspawn",
-                                 pids or ([leader] if leader else []), leader, sub=kv.get("SERVICE", ""))
+                                 pids or ([leader] if leader else []), leader, sub=kv.get("SERVICE", ""),
+                                 cgroup=scope_of(procs[pids[0]].cgroup, scope) if pids else "")
         for p in procs.values():
             if not (p.comm.startswith("qemu-system") or p.comm.startswith("qemu-kvm")):
                 continue
@@ -596,6 +630,9 @@ class IpcTracker:
                         g.pids[:64], g.netns, [f"{h}:{hp}→{cp}/{pr}" for h, hp, cp, pr in m.ports] if m else [],
                         iface=g.iface)
             nodes[g.nid] = n
+            if g.cgroup:
+                self._cgroup(n, g.cgroup, rate)
+            n.started = m.created if m else None
             for ip in n.addrs:
                 ctr_ips[ip] = g.nid
             for _h, hp, _cp, pr in (m.ports if m else []):
@@ -628,7 +665,8 @@ class IpcTracker:
             if nid not in nodes:
                 p = w.procs.get(pid)
                 nodes[nid] = IpcNode(nid, "process", p.comm if p else str(pid), self._user(p.uid) if p else "",
-                                     pids=[pid], cmd=self._cmdline(pid))
+                                     pids=[pid], cmd=self._cmdline(pid), fds=p.nfd if p else None,
+                                     unit=unit_of(p.cgroup) if p else "")
             return nid
 
         def remote(kind: str, ip: str, cid: str) -> str:
@@ -774,13 +812,39 @@ class IpcTracker:
                     b, prov = remote(kind, s.dst, ""), "live"
                 links.append(IpcLink(g.nid, b, s.proto, end, _hp(s.dst, s.dport), state=s.state, prov=prov, ino=s.ino))
 
+        # ---- host-wide health: kernel counters and TCP states
+        snmp = netstat.parse_snmp(self.fs.read("proc/net/snmp") or "")
+        snmp |= netstat.parse_snmp(self.fs.read("proc/net/netstat") or "")
+        kernel: dict[str, float | None] = {c: rate(f"k:{c}", snmp.get(c)) for c in netstat.COUNTERS}
+        kernel["conntrack"] = self.fs.read_int("proc/sys/net/netfilter/nf_conntrack_count")
+        kernel["conntrack_max"] = self.fs.read_int("proc/sys/net/netfilter/nf_conntrack_max")
+        states: dict[str, int] = {}
+        for s in inet:
+            if s.proto == "tcp":
+                states[s.state] = states.get(s.state, 0) + 1
+
         for k in [k for k in self.rates.prev if k not in touched]:
             del self.rates.prev[k]
         self._rollup(nodes, links)
         counts: dict[str, int] = {}
         for k in links:
             counts[k.kind] = counts.get(k.kind, 0) + k.count
-        return IpcStat(list(nodes.values()), links, counts, "  ·  ".join(w.notes), now - w.t)
+        return IpcStat(list(nodes.values()), links, counts, "  ·  ".join(w.notes), now - w.t, kernel, states)
+
+    def _cgroup(self, n: IpcNode, path: str, rate) -> None:
+        """A guest's CPU, memory and limits from its cgroup scope, read every poll."""
+        base = f"sys/fs/cgroup{path}"
+        usec = None
+        for line in (self.fs.read(f"{base}/cpu.stat") or "").splitlines():
+            if line.startswith("usage_usec "):
+                usec = int(line.split()[1])
+        per_s = rate(f"cg:{n.id}:cpu", usec)
+        n.cpu = per_s / 1e4 if per_s is not None else None  # µs of CPU per second → % of one thread
+        n.rss = self.fs.read_int(f"{base}/memory.current")
+        n.mem_limit = self.fs.read_int(f"{base}/memory.max")  # "max" → None
+        n.cpu_limit = parse_cpu_max(self.fs.read(f"{base}/cpu.max"))
+        n.pids_n = self.fs.read_int(f"{base}/pids.current")
+        n.unit = unit_of(path)
 
     def _rollup(self, nodes: dict[str, IpcNode], links: list[IpcLink]) -> None:
         """Node rates from their links; reverse-DNS names for peers."""

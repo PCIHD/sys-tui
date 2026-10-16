@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 
 from .. import bindings as B
-from ..canvas import Canvas, mix, polyline_points, shade
+from ..canvas import Canvas, mix, polyline_points, ramp, shade
 from ..history import History
 from ..telemetry import IpcLink, IpcNode, SystemSnapshot
 from . import charts as ch
@@ -47,6 +47,8 @@ BADGE = {"podman": 0x8F6BD6, "docker": 0x2496ED, "distrobox": 0xE87A3C, "toolbox
 ARC = {"unix": 0x7A6BB8, "pipe": 0x4E9A6A, "tcp": 0x4F7FA8, "udp": 0x4F7FA8}
 SELECT = 0x39C5FF
 HUB_MIN = 10  # Unix clients that make a process a hub
+STRIP_MIN = 8  # free rows under the peers before the host summary is drawn
+STRIP_ROWS = 9  # its full height, NIC chart included
 LEVELS = ("talkers", "talkers + peer IPC", "all processes")
 
 
@@ -94,9 +96,11 @@ class IpcMap(Panel):
             gid = f"group:{name}"
             self.groups[gid] = [m.id for m in ms]
             measured = any(m.in_bps is not None or m.out_bps is not None for m in ms)
+            cpus = [m.cpu for m in ms if m.cpu is not None]
             rows.append(IpcNode(gid, "process", f"{name} ×{len(ms)}", pids=[q for m in ms for q in m.pids],
                                 in_bps=sum(m.in_bps or 0 for m in ms) if measured else None,
-                                out_bps=sum(m.out_bps or 0 for m in ms) if measured else None))
+                                out_bps=sum(m.out_bps or 0 for m in ms) if measured else None,
+                                cpu=sum(cpus) if cpus else None))
             for m in ms:
                 row_of[m.id] = gid
         return rows, row_of
@@ -271,6 +275,7 @@ class IpcMap(Panel):
 
         # ---- outside: the LAN bus, peers and the Internet
         p_box: dict[str, tuple[int, int, int, int]] = {}
+        strip = None  # the host summary under the peers, when there is room
         if outside:
             lan_x = fx1 + 3
             px0, px1 = lan_x + 2, lan_x + 2 + peer_w
@@ -287,6 +292,9 @@ class IpcMap(Panel):
                     p_box["wan"] = (wx0, p_box[router.id][1], min(W - 1, wx0 + wan_w - 2), p_box[router.id][1] + 2)
                 elif y + 1 <= Hc - 2:
                     p_box["wan"] = (px0, y, px1, y + 2)
+            strip_y = max((b[3] for b in p_box.values()), default=nic_y) + 1
+            if Hc - 2 - strip_y >= STRIP_MIN:
+                strip = (px0, strip_y, W - 1, min(Hc - 2, strip_y + STRIP_ROWS))
             ext_in = sum(n.in_bps or 0 for n in peers + ([wan] if wan else []))
             ext_out = sum(n.out_bps or 0 for n in peers + ([wan] if wan else []))
             last_y = max((b[1] for nid, b in p_box.items() if not (nid == "wan" and b[0] > px0)), default=nic_y) * 2 + 1
@@ -374,6 +382,9 @@ class IpcMap(Panel):
             cv.put_text(gx0, bottom, f"+{len(guests) - len(g_y)} more guests", ch.DIM)
         for nid, b in p_box.items():
             self._peer(cv, nodes[nid], b, nid in focus)
+        if strip is not None and s is not None:
+            self._strip(cv, s, h, strip, "host" in focus)
+            self.boxes["host#strip"] = strip
         if not outside and (peers or wan):
             cv.put_text(max(0, fx1 - 30), nic_y, f"LAN {len(peers)} peers{' · Internet' if wan else ''}"[:28], SUB)
 
@@ -395,10 +406,17 @@ class IpcMap(Panel):
         """One process row. ``tag`` replaces the right-hand text: how the row relates to the
         selection, or a hub's client count. ``hub_client`` adds a ◆ after the name."""
         acc = ACCENT["process"] if p.id != "hidden" else ch.DIM
-        cv.fill(x0, y * 2, x1, y * 2 + 2, mix(TILE, acc, 0.22 if sel else 0.06 + 0.04 * (y % 2)))
+        bg = mix(TILE, acc, 0.22 if sel else 0.06 + 0.04 * (y % 2))
+        cv.fill(x0, y * 2, x1, y * 2 + 2, bg)
+        if p.cpu is not None and p.cpu >= 1:  # CPU as a tint behind the row, so text stays legible on it
+            frac = min(1.0, p.cpu / 100)
+            cv.fill(x0 + 1, y * 2, x0 + 1 + max(1, round(frac * (x1 - x0 - 1))), y * 2 + 2,
+                    mix(bg, ramp(frac, ch.LOAD_STOPS), 0.3))
         cv.fill(x0, y * 2, x0 + 1, y * 2 + 2, SELECT if sel else acc)
         measured = bool(p.in_bps or p.out_bps) and tag is None
-        r = rates(p.in_bps, p.out_bps) if measured else tag or f"{nlinks} link{'s' * (nlinks != 1)}"
+        busy = p.cpu is not None and p.cpu >= 1
+        links_txt = f"{nlinks} link{'s' * (nlinks != 1)}"
+        r = rates(p.in_bps, p.out_bps) if measured else tag or (f"{p.cpu:.0f}% · {links_txt}" if busy else links_txt)
         room = x1 - x0 - 2 - len(r) - 1 - 2 * hub_client
         name = p.name[:max(1, room)]
         cv.put_text(x0 + 1, y, name, TEXT if p.id != "hidden" else SUB, None, sel)
@@ -423,7 +441,15 @@ class IpcMap(Panel):
         self._tile(cv, (x0, y, x1, y + 2), acc, sel)
         badge = g.runtime or g.kind
         cv.put_text(x0 + 1, y, badge, TEXT, BADGE.get(badge, 0x3A4658), True)
-        cv.put_text(x0 + 2 + len(badge), y, g.name[: x1 - x0 - len(badge) - 3], TEXT, None, True)
+        res = ""
+        if g.cpu is not None or g.rss is not None:
+            res = " ".join(x for x in (f"{g.cpu:.0f}%" if g.cpu is not None else "",
+                                       ch.human_bytes(g.rss, digits=0) if g.rss else "") if x)
+        room = x1 - x0 - len(badge) - 3
+        if res and room - len(res) - 1 >= 8:
+            ch.text_right(cv, x1 - 1, y * 2, res, ramp(min(1.0, (g.cpu or 0) / 100), ch.LOAD_STOPS) if g.cpu else SUB)
+            room -= len(res) + 1
+        cv.put_text(x0 + 2 + len(badge), y, g.name[:room], TEXT, None, True)
         r = rates(g.in_bps, g.out_bps)
         cv.put_text(x0 + 1, y + 1, r[: x1 - x0 - 2], ch.IN)
         cv.put_text(x0 + 1 + r.index("▼"), y + 1, r[r.index("▼"):][: max(0, x1 - x0 - 2 - r.index("▼"))], ch.OUT)
@@ -441,6 +467,74 @@ class IpcMap(Panel):
         cv.put_text(x0 + 1, y0 + 1, r[: x1 - x0 - 2], ch.IN)
         k = r.index("▼")
         cv.put_text(x0 + 1 + k, y0 + 1, r[k:][: max(0, x1 - x0 - 2 - k)], ch.OUT)
+
+    def _strip(self, cv: Canvas, s: SystemSnapshot, h: History, box, sel: bool) -> None:
+        """This machine at a glance: CPU, memory, NIC traffic, TCP states, kernel error counters."""
+        x0, y0, x1, y1 = box
+        ipc = s.ipc
+        self._tile(cv, box, ACCENT["host"], sel)
+        w = x1 - x0 - 2
+        y = y0
+        cv.put_text(x0 + 1, y, "this machine"[:w], ACCENT["host"], None, True)
+        y += 1
+
+        def gauge(label: str, frac: float, tail: str) -> None:
+            nonlocal y
+            cv.put_text(x0 + 1, y, label, SUB)
+            bx0, bx1 = x0 + 5, x1 - 2 - len(tail)
+            if bx1 - bx0 >= 4:
+                ch.hbar(cv, (bx0, y * 2, bx1, y * 2 + 2), max(0.0, min(1.0, frac)))
+            ch.text_right(cv, x1 - 1, y * 2, tail, TEXT)
+            y += 1
+
+        gauge("CPU", s.cpu.util / 100, f"{s.cpu.util:3.0f}%")
+        if s.mem.total:
+            used = s.mem.total - s.mem.available
+            gauge("MEM", used / s.mem.total, f"{ch.human_bytes(used, digits=0)}/{ch.human_bytes(s.mem.total, digits=0)}")
+        rx, tx = list(h.get("net:all:rx")), list(h.get("net:all:tx"))
+        if y1 - y >= 6:
+            cv.put_text(x0 + 1, y, "NIC", SUB)
+            r = rates(rx[-1] if rx else None, tx[-1] if tx else None)
+            cv.put_text(x0 + 5, y, r[: w - 4], ch.IN)
+            k = r.index("▼")
+            cv.put_text(x0 + 5 + k, y, r[k:][: max(0, w - 4 - k)], ch.OUT)
+            n = x1 - x0 - 2
+            vmax = ch.nice_max(max(rx[-n:] + tx[-n:], default=0.0), 1e3)
+            ch.mirrored(cv, (x0 + 1, (y + 1) * 2, x1 - 1, (y + 3) * 2), ch.fit(rx, n), ch.fit(tx, n), vmax)
+            y += 3
+        if ipc is None:
+            return
+        st = ipc.tcp_states
+        if y <= y1 - 1 and st:
+            parts = [(f"{st.get('ESTAB', 0)} estab", TEXT)]
+            if st.get("CLOSE-WAIT"):  # an app that never closes its end: worth the room before the rest
+                parts.append((f"{st['CLOSE-WAIT']} close-wait", ch.ORANGE))
+            parts += [(f"{st.get('TIME-WAIT', 0)} time-wait", SUB), (f"{st.get('LISTEN', 0)} listen", SUB)]
+            x = x0 + 1
+            cv.put_text(x, y, "TCP", SUB)
+            x += 4
+            for txt, col in parts:
+                if x + len(txt) > x1 - 1:
+                    break
+                cv.put_text(x, y, txt, col)
+                x += len(txt) + 1
+            y += 1
+        k = ipc.kernel
+        if y <= y1 - 1 and any(v is not None for v in k.values()):
+            items = [("retrans", k.get("Tcp.RetransSegs")), ("rst", k.get("Tcp.OutRsts")),
+                     ("drops", k.get("TcpExt.ListenDrops"))]
+            x = x0 + 1
+            for label, v in items:
+                txt = f"{label} {v:.1f}/s" if v else f"{label} 0"
+                if x + len(txt) > x1 - 1:
+                    break
+                cv.put_text(x, y, txt, ch.RED if v and label != "rst" else ch.ORANGE if v else SUB)
+                x += len(txt) + 2
+            y += 1
+        ct, mx = k.get("conntrack"), k.get("conntrack_max")
+        if y <= y1 - 1 and ct is not None:
+            txt = f"conntrack {ct:.0f}" + (f" of {mx / 1e3:.0f}k" if mx and mx >= 1e4 else f" of {mx:.0f}" if mx else "")
+            cv.put_text(x0 + 1, y, txt[:w], ch.RED if mx and ct > 0.8 * mx else SUB)
 
     def _arcs(self, cv: Canvas, arcs: dict, ys: dict[str, int], x_edge: int, width: int, focus: set[str]) -> None:
         """Nested arcs left of a column: shorter spans inside, one 2-px level each."""

@@ -91,6 +91,8 @@ class History:
                 if node.kind in ("container", "vm", "peer", "wan"):
                     self.push(f"ipc:{node.id}:in", node.in_bps)
                     self.push(f"ipc:{node.id}:out", node.out_bps)
+            self.push("ipc:k:retrans", s.ipc.kernel.get("Tcp.RetransSegs"))
+            self.push("ipc:k:rsts", s.ipc.kernel.get("Tcp.OutRsts"))
         for r in s.sensors:
             if r.kind in ("energy",):
                 continue
