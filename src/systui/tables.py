@@ -177,7 +177,8 @@ def ipc_node(ipc: IpcStat, nid: str, members: set[str] | None = None) -> IpcNode
                    in_bps=sum(m.in_bps or 0 for m in ms) if measured else None,
                    out_bps=sum(m.out_bps or 0 for m in ms) if measured else None, cmd=ms[0].cmd,
                    cpu=total("cpu"), rss=total("rss"), threads=total("threads"), fds=total("fds"),
-                   started=min(starts) if starts else None, unit=ms[0].unit)
+                   started=min(starts) if starts else None, unit=ms[0].unit,
+                   shm_n=total("shm_n"), shm_bytes=total("shm_bytes"))
 
 
 def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str] | None = None) -> list[Row]:
@@ -199,7 +200,9 @@ def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str]
         out += _resources(n)
         if n.shm_n:
             size = f" · {human_bytes(n.shm_bytes)}" if n.shm_bytes else ""
-            out.append(Row("Shared memory", f"{n.shm_n} segment{'s' * (n.shm_n != 1)}{size}", LIVE))
+            what = "holds" if n.id.startswith("group:") else "segment"  # a segment two members share counts twice
+            out.append(Row("Shared memory", f"{n.shm_n} {what}{'s' * (n.shm_n != 1 and what == 'segment')}{size}",
+                           LIVE))
     elif n.kind in ("container", "vm"):
         out.append(Row("Runtime", n.runtime or n.kind, LIVE))
         if n.sub:

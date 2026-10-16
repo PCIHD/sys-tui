@@ -435,3 +435,15 @@ def test_ipc_detail_and_table_know_shared_memory():
     assert rows["Shared memory"].startswith("4 segments") and "shm" in rows["Links"]
     nodes = {n.id: n for n in ipc.nodes}
     assert {k.b_end for k in ipc_filter(ipc.links, nodes, ("shm",))} == {"pipewire-memfd", "SysV #6"}
+
+
+def test_folded_group_sums_shared_memory():
+    from systui.tables import ipc_node, ipc_rows
+    from systui.telemetry import IpcNode, IpcStat
+
+    nodes = [IpcNode(f"proc:{i}", "process", "chrome", pids=[i], shm_n=3, shm_bytes=100) for i in (1, 2)]
+    ipc = IpcStat(nodes, [])
+    g = ipc_node(ipc, "group:chrome", {"proc:1", "proc:2"})
+    assert (g.shm_n, g.shm_bytes) == (6, 200)
+    rows = {r.key: r.value for r in ipc_rows(ipc, "group:chrome", None, {"proc:1", "proc:2"})}
+    assert rows["Shared memory"].startswith("6 holds")
