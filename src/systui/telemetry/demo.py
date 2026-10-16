@@ -6,8 +6,8 @@ import math
 import random
 import time
 
-from . import (BoardInfo, CpuStat, Dimm, DiskStat, GpuProc, GpuStat, MemStat, NetStat, PartStat, ProcStat,
-               Psi, PsiLine, Reading, SystemSnapshot, ZramStat)
+from . import (BoardInfo, CpuStat, Dimm, DiskStat, GpuProc, GpuStat, IpcLink, IpcNode, IpcStat, MemStat, NetStat,
+               PartStat, ProcStat, Psi, PsiLine, Reading, SystemSnapshot, ZramStat)
 
 GiB = 2**30
 
@@ -140,7 +140,78 @@ class DemoSource:
         s.procs[1].disks = ["nvme0n1"]
         s.psi = Psi(cpu=PsiLine(0.0, 0.16, 2.22), memory=PsiLine(0.0, 0.51, 1.29, 0.0, 0.51, 1.28),
                     io=PsiLine(0.87, 1.36, 2.01, 0.70, 1.04, 1.47))
+        s.ipc = demo_ipc(t, s.hostname)
         return s
 
     def close(self) -> None:
         pass
+
+
+def demo_ipc(t: float, hostname: str) -> IpcStat:
+    """A desktop with two podman containers, a distrobox, a QEMU guest and three LAN peers."""
+    llm = _wave(t, 19) ** 3  # token streaming from the llama.cpp container
+    web = _wave(t, 13) ** 2
+    ssh = _wave(t, 31, 1.0) ** 4
+    procs = [(1000, "firefox"), (1001, "python3"), (1002, "gnome-shell"), (1003, "Xwayland"), (1004, "pipewire"),
+             (1005, "code"), (1100, "dbus-broker"), (1200, "sshd")]
+    nodes = [IpcNode("host", "host", hostname, addrs=["192.168.1.10", "192.168.1.20"])]
+    nodes += [IpcNode(f"proc:{pid}", "process", name, "root" if name == "sshd" else "demo", pids=[pid], cmd=name)
+              for pid, name in procs]
+    nodes += [
+        IpcNode("ctr:df517a104788", "container", "llm-litellm-db-1", "docker.io/library/postgres:16", "podman",
+                "Up 25 hours (healthy)", ["10.89.0.3"], [30278, 30301], 4026533725, ["127.0.0.1:5432→5432/tcp"],
+                in_bps=2e4 + 4e5 * llm, out_bps=1e4 + 1.5e5 * llm),
+        IpcNode("ctr:44254bc720fd", "container", "llm-llamacpp-1", "ghcr.io/ggml-org/llama.cpp:server-cuda", "podman",
+                "Up 3 hours", ["10.89.0.5"], [31002], 4026533802, ["127.0.0.1:8080→8080/tcp"],
+                in_bps=3e3 + 2.4e6 * llm, out_bps=2e3 + 3e5 * llm),
+        IpcNode("ctr:9a1fd0c2be11", "container", "fedora-dev", "registry.fedoraproject.org/fedora-toolbox:44",
+                "distrobox", "Up 2 days", [], [4100, 4101], None, in_bps=8e5 * web ** 3, out_bps=2e4 * web ** 3),
+        IpcNode("vm:win11", "vm", "win11", "libvirt-qemu", "qemu", "running", ["192.168.122.50"], [5200],
+                in_bps=1e4 + 9e5 * _wave(t, 23, 2.0) ** 4, out_bps=4e4 + 6e6 * _wave(t, 17, 0.5) ** 6, iface="vnet0"),
+        IpcNode("peer:192.168.1.1", "peer", "router", "c0:68:cc:2b:d7:41", addrs=["192.168.1.1"], router=True,
+                iface="enp6s0", dns="router.lan", prov="derived"),
+        IpcNode("peer:192.168.1.20", "peer", "nas", "68:b9:c2:7e:fd:2e", addrs=["192.168.1.20"], iface="enp6s0",
+                dns="nas.lan", prov="derived"),
+        IpcNode("peer:192.168.1.34", "peer", "laptop", "f0:a3:b2:0b:d5:d5", addrs=["192.168.1.34"], iface="wlp8s0",
+                dns="laptop.lan", prov="derived"),
+        IpcNode("wan", "wan", "Internet"),
+    ]
+
+    def tcp(a, b, src, dst, pid, i, o, prov="live", state="ESTAB", proto="tcp"):
+        return IpcLink(a, b, proto, src, dst, pid, None, state, i, o, prov=prov)
+
+    links = [
+        IpcLink("proc:1000", "proc:1004", "unix", "", "/run/user/1000/pipewire-0", 1000, 1004, "ESTAB", count=3),
+        IpcLink("proc:1000", "proc:1002", "unix", "", "/run/user/1000/wayland-0", 1000, 1002, "ESTAB"),
+        IpcLink("proc:1003", "proc:1002", "unix", "", "/run/user/1000/wayland-0", 1003, 1002, "ESTAB", count=2),
+        IpcLink("proc:1005", "proc:1002", "unix", "", "/run/user/1000/wayland-0", 1005, 1002, "ESTAB"),
+        *[IpcLink(f"proc:{pid}", "proc:1100", "unix", "", "/run/user/1000/bus", pid, 1100, "ESTAB")
+          for pid in (1000, 1002, 1004, 1005)],
+        IpcLink("proc:1005", "proc:1001", "pipe", "", "", 1005, 1001, count=2),
+        IpcLink("proc:1001", "proc:1005", "pipe", "", "", 1001, 1005),
+        tcp("proc:1001", "ctr:44254bc720fd", "127.0.0.1:41234", "127.0.0.1:8080", 1001, 2e3 + 2.4e6 * llm,
+            1e3 + 2e5 * llm, "derived"),
+        tcp("proc:1001", "ctr:df517a104788", "127.0.0.1:52210", "127.0.0.1:5432", 1001, 1e4 + 4e5 * llm,
+            5e3 + 1.5e5 * llm, "derived"),
+        tcp("proc:1000", "wan", "192.168.1.10:46096", "34.54.185.247:443", 1000, 3e6 * web, 8e4 * web),
+        tcp("proc:1000", "wan", "192.168.1.10:51022", "142.250.183.14:443", 1000, 9e5 * web ** 2, 2e4 * web,
+            proto="udp"),
+        tcp("proc:1005", "peer:192.168.1.20", "192.168.1.10:40686", "192.168.1.20:445", 1005, 6e5 * ssh, 4e6 * ssh),
+        tcp("proc:1200", "peer:192.168.1.34", "192.168.1.10:22", "192.168.1.34:51514", 1200, 2e3 + 3e4 * ssh,
+            5e3 + 2e5 * ssh),
+        tcp("proc:1002", "peer:192.168.1.1", "192.168.1.10:5353", "224.0.0.251:5353", 1002, None, None,
+            proto="udp"),
+        tcp("ctr:9a1fd0c2be11", "wan", "192.168.1.10:38810", "151.101.2.132:443", 4100, 8e5 * web ** 3,
+            2e4 * web ** 3),
+        tcp("ctr:44254bc720fd", "wan", "10.89.0.5:44312", "185.199.108.133:443", None, None, None),
+        IpcLink("proc:1200", "", "listen", "0.0.0.0:22", state="LISTEN"),
+        IpcLink("ctr:df517a104788", "", "listen", "0.0.0.0:5432", state="LISTEN"),
+        IpcLink("ctr:44254bc720fd", "", "listen", "0.0.0.0:8080", state="LISTEN"),
+    ]
+    from .ipc import rollup
+
+    rollup({n.id: n for n in nodes}, links)
+    counts: dict[str, int] = {}
+    for k in links:
+        counts[k.kind] = counts.get(k.kind, 0) + k.count
+    return IpcStat(nodes, links, counts, "demo data")

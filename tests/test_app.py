@@ -24,7 +24,8 @@ async def test_app_tabs_selection_and_keys():
         await pilot.pause(0.3)
         assert board.mode == "off" and not board.labels and not board.card
         tabs = app.query_one(TabbedContent)
-        for key, tid in (("2", "cpu"), ("3", "mem"), ("4", "disk"), ("5", "net"), ("6", "proc"), ("7", "sens"), ("1", "board")):
+        for key, tid in (("2", "cpu"), ("3", "mem"), ("4", "disk"), ("5", "net"), ("6", "proc"), ("7", "sens"),
+                         ("8", "ipc"), ("1", "board")):
             await pilot.press(key)
             await pilot.pause(0.4)
             assert tabs.active == tid
@@ -35,6 +36,104 @@ async def test_app_tabs_selection_and_keys():
         await pilot.press("G")  # launches `true` under suspend()
         await pilot.press("p")
         assert app.paused
+
+
+@pytest.mark.asyncio
+async def test_ipc_tab_map_table_and_selection():
+    from systui.widgets import IpcDetail, IpcView
+
+    app = SysTuiApp(DemoSource(), interval=0.3, initial_tab="ipc")
+    async with app.run_test(size=(200, 56)) as pilot:
+        await pilot.pause(0.6)
+        view = app.query_one(IpcView)
+        table = app.query_one("#ipc-links", DataTable)
+        everything = table.row_count
+        assert everything == len(app.snapshot.ipc.links) and view._frame is not None
+        assert app.query_one("#ipc-side").size.width > 0 and app.query_one("#side").size.width == 0
+        x0, y0, x1, y1 = view.panel.boxes["ctr:44254bc720fd"]
+        await pilot.click(IpcView, offset=(x0 + 3 + 1, y0 + 1))  # +1: the border
+        await pilot.pause(0.4)
+        assert view.panel.selected == "ctr:44254bc720fd"
+        assert table.row_count == len(app.snapshot.ipc.links_of("ctr:44254bc720fd")) < everything
+        assert app.query_one(IpcDetail).current == "ctr:44254bc720fd"
+        table.focus()
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert "ctr:44254bc720fd" in view.panel.highlight
+        view.focus()
+        await pilot.press("tab")
+        await pilot.pause(0.2)
+        assert view.panel.selected not in (None, "ctr:44254bc720fd")
+
+
+@pytest.mark.asyncio
+async def test_ipc_tab_from_gpu_mode_flies_back_to_the_board_first():
+    BoardView.TRANSITION_S = 0.08
+    app = SysTuiApp(DemoSource(), interval=0.3)
+    try:
+        async with app.run_test(size=(200, 56)) as pilot:
+            await pilot.pause(0.5)
+            board = app.query_one(BoardView)
+            await pilot.press("g")
+            await pilot.pause(0.45)
+            assert board.scene_layer.startswith("gpu-")
+            await pilot.press("8")
+            await pilot.pause(0.6)
+            assert board.scene_layer == "board"
+            assert app.query_one(TabbedContent).active == "ipc"
+            assert "IPC" in app.query_one("#tabs").get_tab("ipc").label_text
+    finally:
+        BoardView.TRANSITION_S = 0.55
+
+
+class LazyIpcDemo(DemoSource):
+    """Like LinuxSource: no IPC data unless something asked for it."""
+
+    want_ipc = False
+
+    def collect(self, now=None):
+        s = super().collect(now)
+        if not self.want_ipc:
+            s.ipc = None
+        return s
+
+
+@pytest.mark.asyncio
+async def test_switching_tabs_starts_and_stops_the_ipc_walk():
+    BoardView.TRANSITION_S = 0.08
+    src = LazyIpcDemo()
+    app = SysTuiApp(src, interval=0.3)
+    try:
+        async with app.run_test(size=(200, 56)) as pilot:
+            await pilot.pause(0.4)
+            assert not src.want_ipc
+            await pilot.press("8")
+            await pilot.pause(0.5)
+            assert src.want_ipc and app.query_one("#ipc-links", DataTable).row_count > 0
+            await pilot.press("1")
+            await pilot.pause(0.3)
+            assert not src.want_ipc
+            await pilot.press("8")
+            await pilot.pause(0.3)
+            assert src.want_ipc
+            await pilot.press("g")  # straight into the GPU from the IPC tab
+            await pilot.pause(0.5)
+            assert app.query_one(BoardView).scene_layer.startswith("gpu-")
+            assert not src.want_ipc
+    finally:
+        BoardView.TRANSITION_S = 0.55
+
+
+def test_ipc_tab_turns_the_walk_on_only_while_it_shows():
+    class Src(DemoSource):
+        want_ipc = False
+
+    src = Src()
+    SysTuiApp(src, initial_tab="ipc")
+    assert src.want_ipc
+    src2 = Src()
+    SysTuiApp(src2)
+    assert not src2.want_ipc
 
 
 @pytest.mark.asyncio

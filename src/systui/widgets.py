@@ -1,4 +1,4 @@
-"""Textual widgets: the animated board view, pixel chart panels, part detail, GPU gauges."""
+"""Textual widgets: the animated board view, pixel chart panels, the IPC map, part detail, GPU gauges."""
 
 from __future__ import annotations
 
@@ -314,6 +314,88 @@ class PanelView(Widget):
         if cv is None or y >= cv.h:
             return Strip.blank(width)
         return Strip(cv.segments(y), cv.w).crop(0, width)
+
+
+class IpcView(PanelView, can_focus=True):
+    """The IPC map. Click a node, or Tab through them, to select it; click empty space to clear."""
+
+    BINDINGS = [
+        Binding("tab", "cycle(1)", "Next node", show=False),
+        Binding("shift+tab", "cycle(-1)", show=False),
+    ]
+
+    class Selected(Message):
+        def __init__(self, nid: str | None) -> None:
+            self.nid = nid
+            super().__init__()
+
+    def node_at(self, x: int, y: int) -> str | None:
+        for nid, (x0, y0, x1, y1) in getattr(self.panel, "boxes", {}).items():
+            if x0 <= x < x1 and y0 <= y < y1:
+                return nid
+        return None
+
+    def select(self, nid: str | None) -> None:
+        self.panel.selected = nid
+        self.panel.highlight = set()
+        self.redraw()
+        self.post_message(self.Selected(nid))
+
+    def action_cycle(self, step: int) -> None:
+        order = list(getattr(self.panel, "boxes", {}))
+        if not order:
+            return
+        i = order.index(self.panel.selected) if self.panel.selected in order else -1
+        self.select(order[(i + step) % len(order)])
+
+    def on_click(self, event: events.Click) -> None:
+        off = event.get_content_offset(self)
+        if off is not None:
+            self.select(self.node_at(off.x, off.y))
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        off = event.get_content_offset(self)
+        nid = self.node_at(off.x, off.y) if off is not None else None
+        ipc = self.snapshot.ipc if self.snapshot is not None else None
+        n = None
+        if ipc is not None and nid:
+            from .tables import ipc_node
+
+            n = ipc_node(ipc, nid, self.panel.members(nid))
+        self.tooltip = f"{n.name} — {n.runtime or n.kind}" if n else None
+
+
+class IpcDetail(Static):
+    """Everything known about the node selected on the IPC map, tagged live / derived."""
+
+    current: str | None = None
+
+    def show(self, ipc, nid: str | None, history: History | None, members: set[str] | None = None) -> None:
+        from .tables import ipc_node, ipc_rows
+
+        if ipc is None:
+            self.current = None
+            self.update(Text("Collecting connections…", style="dim"))
+            return
+        n = ipc_node(ipc, nid or "host", members)
+        self.current = n.id if n else None
+        if n is None:
+            self.update(Text("Click a node on the map (or Tab) to inspect it.", style="dim"))
+            return
+        title = Text()
+        title.append(f" {n.name} ", style="bold black on #39c5ff")
+        title.append(f"  {n.runtime or n.kind}", style="bold")
+        if not nid:
+            title.append("  · click a node to narrow the table", style="#8a9aad")
+        t = Table.grid(padding=(0, 1), expand=True)
+        t.add_column(width=1)
+        t.add_column(style="bold #8fb8de", ratio=2)
+        t.add_column(ratio=5)
+        for r in ipc_rows(ipc, n.id, history, members):
+            sym, color = PROV_STYLE[r.kind]
+            t.add_row(Text(sym, style=color), r.key, r.value)
+        legend = Text.assemble(("● live ", "#3dff7a"), ("◐ derived", "#f2c14e"))
+        self.update(Group(title, Text(""), t, Text(""), legend))
 
 
 class DetailPanel(Static):

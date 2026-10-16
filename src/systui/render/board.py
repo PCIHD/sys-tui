@@ -24,6 +24,26 @@ CARD = 0x262A31
 CARD_EDGE = 0x5E6670
 
 
+def lanes(pts: list[tuple[float, float]]) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Two parallel 1-px lanes along an orthogonal route of pixel points: inbound on the route
+    itself, outbound one pixel to its left, mitred at the corners."""
+    pts = [(round(x), round(y)) for x, y in pts]
+    pts = [q for i, q in enumerate(pts) if i == 0 or q != pts[i - 1]]
+    normals = []
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        dx, dy = (bx > ax) - (bx < ax), (by > ay) - (by < ay)
+        normals.append((dy, -dx))
+    if not normals:
+        return pts, pts
+    out = []
+    for i, (x, y) in enumerate(pts):
+        near = normals[max(0, i - 1): i + 1]
+        ox = max(-1, min(1, sum(n[0] for n in near)))
+        oy = max(-1, min(1, sum(n[1] for n in near)))
+        out.append((x + ox, y + oy))
+    return polyline_points(pts), polyline_points(out)
+
+
 def _hash(i: int, j: int) -> int:
     h = (i * 2654435761 ^ j * 40503) & 0xFFFFFFFF
     h ^= h >> 15
@@ -214,23 +234,7 @@ class BoardScene(Scene):
         return polyline_points([self.P(x, y) for x, y in pts_pct])
 
     def _lanes(self, pts_pct: list[tuple[float, float]]) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-        """Two parallel 1-px lanes along an orthogonal route: inbound on the route itself,
-        outbound one pixel to its left, mitred at the corners."""
-        pts = [(round(x), round(y)) for x, y in (self.P(x, y) for x, y in pts_pct)]
-        pts = [q for i, q in enumerate(pts) if i == 0 or q != pts[i - 1]]
-        normals = []
-        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
-            dx, dy = (bx > ax) - (bx < ax), (by > ay) - (by < ay)
-            normals.append((dy, -dx))
-        if not normals:
-            return pts, pts
-        out = []
-        for i, (x, y) in enumerate(pts):
-            near = normals[max(0, i - 1): i + 1]
-            ox = max(-1, min(1, sum(n[0] for n in near)))
-            oy = max(-1, min(1, sum(n[1] for n in near)))
-            out.append((x + ox, y + oy))
-        return polyline_points(pts), polyline_points(out)
+        return lanes([self.P(x, y) for x, y in pts_pct])
 
     def _routes(self) -> None:
         """Pixel paths for power (EPS → VRM → socket) and data (devices ↔ CPU / chipset)."""
