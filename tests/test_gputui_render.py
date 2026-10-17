@@ -147,6 +147,60 @@ def test_a_hot_memory_chip_turns_its_bus_warm():
     assert red_minus_blue(hot_chip) > 60 > red_minus_blue(cool_chip)
 
 
+def _card_5080(w=160, h=48):
+    p = load_profiles()["zotac-5080"]
+    return CardScene(p, SKU_BY_KEY["5080"], w, h)
+
+
+def _lane_colors(cv, lanes):
+    return [cv.px[y * cv.pw + x] for path in lanes for x, y in path]
+
+
+def _frame_text(cv) -> str:
+    return "".join(cv.text[k][0] for k in sorted(cv.text, key=lambda p: (p[1], p[0])))
+
+
+def test_card_bandwidth_lanes_sit_outside_the_fans():
+    sc = _card_5080()
+    assert sc.gddr_lanes and sc.pcie_lanes
+    X0, Y0, X1, Y1 = sc.shroud
+    for path in sc.gddr_lanes + sc.pcie_lanes:
+        assert len(path) >= 4
+        for x, y in path:
+            assert X0 < x < X1 and Y0 < y < Y1
+            for _, cx, cy, rp, _ring in sc.fans:
+                assert (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 > rp * rp
+
+
+def test_card_bandwidth_follows_gddr_and_pcie():
+    sc = _card_5080()
+    snap = _snap(util_mem=60, pcie_tx_kbs=8_000_000, pcie_rx_kbs=8_000_000,
+                 gpm={"DRAM_BW_UTIL": 60.0})
+    cv = sc.frame(1.0, snap)
+    assert _lane_colors(cv, sc.gddr_lanes) != _lane_colors(sc.static, sc.gddr_lanes)
+    assert _lane_colors(cv, sc.pcie_lanes) != _lane_colors(sc.static, sc.pcie_lanes)
+    text = _frame_text(cv)
+    assert "GB/s" in text and "▲" in text
+
+
+def test_card_bandwidth_stays_on_the_groove_without_counters():
+    sc = _card_5080()
+    snap = _snap(util_mem=None, pcie_tx_kbs=None, pcie_rx_kbs=None, gpm={})
+    for mode in ("live", "off"):
+        cv = sc.frame(1.0, snap, mode=mode)
+        assert _lane_colors(cv, sc.gddr_lanes) == _lane_colors(sc.static, sc.gddr_lanes)
+        assert _lane_colors(cv, sc.pcie_lanes) == _lane_colors(sc.static, sc.pcie_lanes)
+
+
+def test_card_thermal_tints_gddr_and_leaves_pcie_dark():
+    sc = _card_5080()
+    snap = _snap(temp_mem=90.0, temp_gpu=70, pcie_tx_kbs=8_000_000, pcie_rx_kbs=8_000_000,
+                 gpm={"DRAM_BW_UTIL": 60.0})
+    cv = sc.frame(1.0, snap, mode="thermal")
+    assert _lane_colors(cv, sc.gddr_lanes) != _lane_colors(sc.static, sc.gddr_lanes)
+    assert _lane_colors(cv, sc.pcie_lanes) == _lane_colors(sc.static, sc.pcie_lanes)
+
+
 def test_pcie_lanes_past_the_link_width_stay_dark():
     sc = _pcb_5080(200, 60)
     snap = _snap(pcie_width=8, pcie_tx_kbs=5_000_000, pcie_rx_kbs=5_000_000)
