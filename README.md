@@ -157,11 +157,11 @@ Boards without a profile get a **generic** ATX layout built from what the system
 
 ## gputui
 
-The GPU app in this tree. It figures out which RTX 50-series card is in the machine and draws that card's **actual PCB**: the GPU package, every GDDR7 chip, each VRM phase, the 12V-2x6 connector, shunts, fuses, display outputs and PCIe fingers. Live NVML telemetry animates it. The fan-side card draws device-wide GDDR activity along the top of the shroud and PCIe traffic along the bottom (▲ card → host, ▼ host → card).
+The GPU app in this tree. It figures out which RTX 50-series card is in the machine and draws that card's **actual PCB**: the GPU package, every GDDR7 chip, each VRM phase, the 12V-2x6 connector, shunts, fuses, display outputs and PCIe fingers. Live NVML telemetry animates it. The memory buses carry the device-wide GDDR rate, and the PCIe lanes carry the trained link (▲ card → host, ▼ host → card).
 
 ![PCB view](docs/gpu/pcb-zotac-5080.png)
 
-| Card (fans at live RPM, GDDR and PCIe on the shroud) | Die floorplan (fused-off units greyed) | RTX 5090 FE (3-piece PCB) |
+| Card (fans at live RPM) | Die floorplan (fused-off units greyed) | RTX 5090 FE (3-piece PCB) |
 |---|---|---|
 | ![card](docs/gpu/card-zotac-5080.png) | ![die](docs/gpu/die-gb203.png) | ![5090](docs/gpu/pcb-5090-fe.png) |
 
