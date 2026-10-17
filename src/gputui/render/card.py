@@ -1,23 +1,15 @@
-"""Card scene: the cooler seen from the fan side.
-
-Fans spin at their live RPM. Grooves in the shroud margin carry the device-wide GDDR bus
-(top) and the PCIe link (bottom, ▲ card → host, ▼ host → card). NVML reports one DRAM
-activity figure, so the GDDR grooves do not split read and write.
-"""
+"""Card scene: the cooler seen from the fan side, fans spinning at their live RPM."""
 
 from __future__ import annotations
 
 import math
 
 from ..boards import BoardProfile, Component
-from ..canvas import Canvas, mix, ramp, shade
+from ..canvas import Canvas, mix, shade
 from ..chips import SkuSpec
-from ..components import kbs
 from ..telemetry import GpuSnapshot
 from . import Scene
-from . import charts as ch
 from . import sprites as sp
-from .pcb import DATA, MEM_HEAT, MEM_TEMP, _pulses, pcie_level
 
 SHROUD = {"fe": (0xB9BDC2, 0x1A1B1E), "default": (0x2B2E33, 0x3F444C)}
 
@@ -27,11 +19,6 @@ class CardScene(Scene):
         super().__init__(w, h)
         self.profile, self.sku, self.labels = profile, sku, labels
         self.title = f"{profile.short} — card (fan side)"
-        self.gddr_lanes: list[list[tuple[int, int]]] = []
-        self.pcie_lanes: list[list[tuple[int, int]]] = []
-        self.shroud = (0, 0, 0, 0)
-        self.pcb_x1 = 0
-        self.corner = 1
         L, H = profile.card_mm
         cv = self.static
         self.bracket_mm = 4.0
@@ -60,10 +47,9 @@ class CardScene(Scene):
         x0, y0 = self.P(0, 0)
         x1, y1 = self.P(L, H)
         X0, Y0, X1, Y1 = int(x0), int(y0), int(x1), int(y1)
-        self.shroud = (X0, Y0, X1, Y1)
         cv.fill(X0, Y0, X1, Y1, body)
         # chamfered corners
-        r = self.corner = max(1, int(4 * s))
+        r = max(1, int(4 * s))
         for i in range(r):
             for (cx, cy, dx, dy) in ((X0, Y0, 1, 1), (X1 - 1, Y0, -1, 1), (X0, Y1 - 1, 1, -1), (X1 - 1, Y1 - 1, -1, -1)):
                 for j in range(r - i):
@@ -82,7 +68,6 @@ class CardScene(Scene):
         py0 = (H - ph_mm) / 2
         ax, ay = self.P(0, py0)
         bx, by = self.P(pw_mm, py0 + ph_mm)
-        self.pcb_x1 = int(bx)
         for x in range(int(ax), int(bx), 2):
             cv.set(x, int(ay), 0x2E6B47)
             cv.set(x, int(by), 0x2E6B47)
@@ -138,7 +123,6 @@ class CardScene(Scene):
         if self.labels:
             name = p.short
             cv.put_text(X0 + 2, min(cv.h - 1, (Y1 - 2) // 2), name[: max(0, X1 - X0 - 4)], 0xC9D1D9, None)
-        self._bus_lanes()
 
     def _fan_ctrls_hint(self) -> list[int]:
         return getattr(self, "_ctrls", [0, 1])
@@ -148,151 +132,6 @@ class CardScene(Scene):
         n = self.profile.fans
         for i, (fid, *_rest) in enumerate(self.fans):
             self.comps[fid].channel = min(i * count // n, count - 1)
-
-    # ------------------------------------------------------------------ bandwidth grooves
-    def _clear_of_fans(self, x: int, y: int) -> bool:
-        for _, cx, cy, rp, _ring in self.fans:
-            if (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= rp * rp:
-                return False
-        return True
-
-    def _on_bus(self, x: int, y: int) -> bool:
-        """Inside the shroud, outside the rounded corners and every fan disc."""
-        X0, Y0, X1, Y1 = self.shroud
-        if not (X0 < x < X1 - 1 and Y0 < y < Y1 - 1):
-            return False
-        r = self.corner
-        if r > 1 and (x < X0 + r or x >= X1 - r) and (y < Y0 + r or y >= Y1 - r):
-            return False
-        return self._clear_of_fans(x, y)
-
-    def _row(self, x0: int, x1: int, y: int) -> list[tuple[int, int]]:
-        run: list[tuple[int, int]] = []
-        best: list[tuple[int, int]] = []
-        for x in range(x0, x1):
-            if self._on_bus(x, y):
-                run.append((x, y))
-            elif run:
-                if len(run) > len(best):
-                    best = run
-                run = []
-        if len(run) > len(best):
-            best = run
-        return best if len(best) >= 4 else []
-
-    def _band(self, x0: int, x1: int, y0: int, y1: int, edge: str) -> list[list[tuple[int, int]]]:
-        """Two traces in ``[y0, y1)`` when the margin is at least 4 px, nearest ``edge``."""
-        if x1 - x0 < 4 or y1 - y0 < 4:
-            return []
-        rows = (y0, y0 + 2) if edge == "top" else (y1 - 3, y1 - 1)
-        if rows[0] < y0 or rows[1] >= y1:
-            return []
-        return [path for y in rows if (path := self._row(x0, x1, y))]
-
-    def _bus_lanes(self) -> None:
-        """Etch the GDDR and PCIe grooves into the shroud margin the fans never cover."""
-        if not self.fans:
-            return
-        X0, Y0, X1, Y1 = self.shroud
-        top = min(cy - rp for _, _, cy, rp, _ring in self.fans)
-        bot = max(cy + rp for _, _, cy, rp, _ring in self.fans)
-        y_top0 = Y0 + 1
-        conn = getattr(self, "conn_box", None)
-        if conn:
-            y_top0 = max(y_top0, conn[3])
-        y_top1 = min(Y1 - 1, math.floor(top - 0.5) + 1)
-        y_bot0 = max(Y0 + 1, math.floor(bot - 0.5) + 1)
-        y_bot1 = Y1 - 1
-        x0, x1 = X0 + 1, min(X1 - 1, self.pcb_x1)
-        self.gddr_lanes = self._band(x0, x1, y_top0, y_top1, "top")
-        self.pcie_lanes = self._band(x0, x1, y_bot0, y_bot1, "bottom")
-        amt = 0.35 if self.profile.kind == "fe" else 0.5
-        cv = self.static
-        for path in self.gddr_lanes + self.pcie_lanes:
-            for x, y in path:
-                cv.set(x, y, mix(cv.get(x, y), DATA, amt))
-
-    def _paint(self, cv: Canvas, path: list[tuple[int, int]], color: int, amt: float) -> None:
-        px, pw = cv.px, cv.pw
-        for x, y in path:
-            i = y * pw + x
-            px[i] = mix(px[i], color, amt)
-
-    def _gddr_temp(self, snap: GpuSnapshot) -> float | None:
-        return snap.temp_mem if snap.temp_mem is not None else snap.temp_gpu
-
-    def _paint_gddr(self, cv: Canvas, dt: float, snap: GpuSnapshot, mode: str) -> None:
-        if not self.gddr_lanes:
-            return
-        if mode == "thermal":
-            temp = self._gddr_temp(snap)
-            if temp is None:
-                return
-            col = ramp((temp - MEM_TEMP[0]) / (MEM_TEMP[1] - MEM_TEMP[0]), MEM_HEAT)
-            for path in self.gddr_lanes:
-                self._paint(cv, path, col, 0.7)
-            return
-        dram = snap.dram_activity
-        if dram is None or dram <= 0.01:
-            return
-        self._gp = getattr(self, "_gp", 0.0) + dt * (6 + 60 * dram)
-        hot = mix(DATA, 0xFFFFFF, 0.45)
-        for k, path in enumerate(self.gddr_lanes):
-            self._paint(cv, path, DATA, 0.12 + 0.6 * dram)
-            _pulses(cv, path, self._gp + 1.1 * k, 0.06 + 0.25 * dram, hot, reverse=k % 2 == 0)
-
-    def _paint_pcie(self, cv: Canvas, dt: float, snap: GpuSnapshot) -> None:
-        if not self.pcie_lanes:
-            return
-        rates = (snap.pcie_tx_kbs, snap.pcie_rx_kbs)
-        if rates[0] is None and rates[1] is None:
-            return
-        self._lp = getattr(self, "_lp", 0.0) + dt * 30
-        for k, path in enumerate(self.pcie_lanes[:2]):
-            rate = rates[0] if k == 0 else rates[1]
-            if rate is None:
-                continue
-            level = pcie_level(rate)
-            if level <= 0:
-                continue
-            col = ch.IN if k == 0 else ch.OUT
-            self._paint(cv, path, col, 0.1 + 0.5 * level)
-            # upper trace flows left, toward the bracket (card → host); lower flows into the card
-            _pulses(cv, path, self._lp * (0.3 + level) + 3.7 * k, 0.03 + 0.12 * level,
-                    mix(col, 0xFFFFFF, 0.4), reverse=k == 0)
-
-    def _fits(self, cv: Canvas, x: int, row: int, text: str) -> bool:
-        end = self.shroud[2]
-        if row < 0 or row >= cv.h or x < 0 or x + len(text) > min(cv.w, end):
-            return False
-        return all((x + i, row) not in cv.text for i in range(len(text)))
-
-    def _bus_labels(self, cv: Canvas, snap: GpuSnapshot) -> None:
-        """Rates in the flow-through, to the right of the PCB, when that strip is wide enough."""
-        x = self.pcb_x1 + 1
-        dram = snap.dram_activity
-        if dram is not None and self.gddr_lanes:
-            gbs = self.sku.bandwidth_gbs * dram
-            text = f"GDDR {dram * 100:.0f}% · ≈{gbs:.0f} GB/s"
-            row = self.gddr_lanes[0][0][1] // 2
-            if self._fits(cv, x, row, text):
-                cv.put_text(x, row, text, 0xC9D1D9, None, True)
-        if not self.pcie_lanes:
-            return
-        parts = []
-        if snap.pcie_tx_kbs is not None:
-            parts.append(("▲" + kbs(snap.pcie_tx_kbs), ch.IN))
-        if snap.pcie_rx_kbs is not None:
-            parts.append(("▼" + kbs(snap.pcie_rx_kbs), ch.OUT))
-        if not parts:
-            return
-        width = sum(len(t) for t, _ in parts) + len(parts) - 1
-        row = self.pcie_lanes[-1][0][1] // 2
-        if not self._fits(cv, x, row, " " * width):
-            return
-        for text, col in parts:
-            cv.put_text(x, row, text, col, None, True)
-            x += len(text) + 1
 
     def draw_live(self, cv: Canvas, t: float, snap: GpuSnapshot | None, mode: str) -> None:
         dt = self.dt(t)
@@ -335,9 +174,3 @@ class CardScene(Scene):
             cv.fill(x0 + 1, y0 + 1, x1 - 1, y1 - 1, glow)
             if self.labels and snap.power_w is not None:
                 cv.put_text_center(x0 - 6, x1 + 6, max(0, y0 // 2 - 1), f"{snap.power_w:.0f} W", 0xFFD84A, None, bold=True)
-        if snap is not None and mode != "off":
-            self._paint_gddr(cv, dt, snap, mode)
-            if mode == "live":
-                self._paint_pcie(cv, dt, snap)
-            if self.labels:
-                self._bus_labels(cv, snap)

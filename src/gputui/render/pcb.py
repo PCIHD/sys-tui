@@ -1,4 +1,4 @@
-"""PCB front/back scene: the board as laid out in its profile, with live power/memory flow."""
+"""PCB front/back scene: the board as laid out in its profile, with live power, memory and PCIe flow."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import math
 from ..boards import BoardProfile, Component
 from ..canvas import HEAT, Canvas, mix, polyline_points, ramp, shade
 from ..chips import SkuSpec
+from ..components import kbs
 from ..telemetry import GpuSnapshot
 from . import Scene
 from . import charts as ch
@@ -23,6 +24,9 @@ TRACE = 0x1E7046  # copper under solder mask: a shade lighter than the bare boar
 MEM_TEMP = (45.0, 100.0)  # GDDR7 °C range of the bus colour scale (throttle is ~105)
 # cool → hot without passing through green, which is the die's SM-activity colour
 MEM_HEAT = [(0.0, DATA), (0.45, 0x9FE3C8), (0.6, 0xF2C14E), (0.8, 0xF07F3C), (1.0, 0xE5383B)]
+# usable bytes/s per lane, per direction, after line encoding (8b/10b to Gen2, 128b/130b from Gen3)
+PCIE_LANE_BPS = {1: 250e6, 2: 500e6, 3: 984.6e6, 4: 1969.2e6, 5: 3938.5e6, 6: 7877e6}
+_PCIE_ERR = (("replay", "pcie_replay"), ("L0", "pcie_l0_recovery"), ("corr", "pcie_corr"), ("NAK", "pcie_nak"))
 
 
 def _hash(i: int, j: int) -> int:
@@ -508,13 +512,19 @@ class PcbScene(Scene):
             on = bool(con and con.connected)
             cv.set(x1 - 1 if self.side == "front" else x0, y0, LED_ON if on else 0x333333)
 
+        if mode == "live" and self.labels:
+            self._rate_labels(cv, snap)
+
     def _mem_glow(self, cv: Canvas, snap: GpuSnapshot, dt: float, dram: float, mode: str) -> None:
         """Memory buses: brightness and pulses follow DRAM activity, colour follows each chip's
         temperature when the per-module sensors are readable (root), else plain data cyan.
 
         In thermal view the colour is the whole story: steady, and from the junction
-        temperature when per-module readings are missing.
+        temperature when per-module readings are missing. A quiet live bus stays the static
+        trace. NVML reports one activity figure, so the alternating directions are a convention.
         """
+        raw = snap.dram_activity
+        active = raw is not None and raw > 0.01
         self._mp = getattr(self, "_mp", 0.0) + dt * (6 + 60 * dram)
         px, pw = cv.px, cv.pw
         for b, (cid, channel, paths) in enumerate(self.mem_buses):
@@ -525,12 +535,14 @@ class PcbScene(Scene):
                 col = ramp((temp - MEM_TEMP[0]) / (MEM_TEMP[1] - MEM_TEMP[0]), MEM_HEAT)
             else:
                 col = DATA
+            if mode != "thermal" and not active:
+                continue
             amt = 0.7 if mode == "thermal" else 0.12 + 0.6 * dram
             for path in paths:
                 for x, y in path:
                     i = y * pw + x
                     px[i] = mix(px[i], col, amt)
-            if mode != "live" or dram <= 0.01:
+            if mode != "live" or not active:
                 continue
             hot = mix(col, 0xFFFFFF, 0.45)
             for k, path in enumerate(paths):
@@ -591,6 +603,179 @@ class PcbScene(Scene):
             level, col = (lv_in, ch.IN) if k % 2 == 0 else (lv_out, ch.OUT)
             if active and _hash(k, frame) < level * 65535:
                 cv.fill(x, y0, x + 1, y1, col)
+
+    # --------------------------------------------------------------------- rate labels
+    def _rate_labels(self, cv: Canvas, snap: GpuSnapshot) -> None:
+        self._gddr_label(cv, snap)
+        self._pcie_label(cv, snap)
+
+    def _gddr_gbs(self, snap: GpuSnapshot, dram: float) -> float:
+        """Device GB/s. NVML's memory clock is half the GDDR data rate; without it, use the rated peak."""
+        clk = snap.clk_mem
+        if clk:
+            peak = self.sku.bus_width / 8 * (clk * 2 / 1000)
+        else:
+            peak = self.sku.bandwidth_gbs
+        return peak * dram
+
+    def _gddr_label(self, cv: Canvas, snap: GpuSnapshot) -> None:
+        dram = snap.dram_activity
+        if dram is None or dram <= 0.01 or not self.gpu_box:
+            return
+        gbs = self._gddr_gbs(snap, dram)
+        texts = (f"GDDR ≈{gbs:.0f} GB/s · {dram * 100:.0f}%", f"≈{gbs:.0f} GB/s")
+        gcx = (self.gpu_box[0] + self.gpu_box[2]) / 2
+        chips = [c for c in self.profile.of_kind("mem", side="front") if c.id in self.boxes]
+        for text in texts:
+            for c in chips:
+                x0, y0, x1, y1 = self.boxes[c.id]
+                row = ((y0 + y1) // 2) // 2
+                x = x1 if (x0 + x1) / 2 >= gcx else x0 - len(text)
+                if self._label_fits(cv, x, row, len(text), boxes=True):
+                    cv.put_text(x, row, text, DATA, None, True)
+                    return
+
+    def _pcie_label(self, cv: Canvas, snap: GpuSnapshot) -> None:
+        token = self._pcie_error_token(snap)
+        box = self.boxes.get("PCIE")
+        if box is None:
+            return
+        x0, _, x1, y1 = box
+        row = min(cv.h - 1, (y1 + 1) // 2)
+        mid = (x0 + x1) / 2
+        for runs in self._pcie_runs(snap, token):
+            width = sum(len(t) for t, _ in runs) + len(runs) - 1
+            placed = self._place_row(cv, row, width, mid, gap=True)
+            if placed is None:
+                placed = self._place_row(cv, row, width, mid, gap=False)
+            if placed is not None:
+                self._put_runs(cv, placed, row, runs)
+                return
+
+    def _pcie_runs(self, snap: GpuSnapshot, token: str | None) -> list[list[tuple[str, int]]]:
+        link = None
+        if snap.pcie_gen and snap.pcie_width:
+            link = f"Gen{snap.pcie_gen} x{snap.pcie_width}"
+        elif snap.pcie_gen:
+            link = f"Gen{snap.pcie_gen}"
+        elif snap.pcie_width:
+            link = f"x{snap.pcie_width}"
+        dirs = []
+        if snap.pcie_tx_kbs is not None:
+            dirs.append(("▲" + kbs(snap.pcie_tx_kbs), ch.IN))
+        if snap.pcie_rx_kbs is not None:
+            dirs.append(("▼" + kbs(snap.pcie_rx_kbs), ch.OUT))
+        pct = self._link_share(snap)
+        items: list[tuple[str, tuple[str, int]]] = []
+        if link:
+            items.append(("link", (link, SILK)))
+        for d in dirs:
+            items.append(("dir", d))
+        if pct:
+            items.append(("pct", (pct, SILK)))
+        if token:
+            items.append(("tok", (token, SILK)))
+        current = items
+        out: list[list[tuple[str, int]]] = []
+        seen: set[tuple[str, ...]] = set()
+        dir_dropped = False
+        while current:
+            key = tuple(text for _, (text, _) in current)
+            if key not in seen:
+                seen.add(key)
+                out.append([run for _, run in current])
+            nxt, dir_dropped = _drop_pcie_piece(current, dir_dropped)
+            if nxt is current:
+                break
+            current = nxt
+        return out
+
+    def _link_share(self, snap: GpuSnapshot) -> str | None:
+        lane = PCIE_LANE_BPS.get(snap.pcie_gen or 0)
+        if not lane or not snap.pcie_width:
+            return None
+        rates = [v * 1024 for v in (snap.pcie_tx_kbs, snap.pcie_rx_kbs) if v is not None]
+        if not rates:
+            return None
+        return f"{min(100, round(max(rates) / (lane * snap.pcie_width) * 100))}%"
+
+    def _pcie_error_token(self, snap: GpuSnapshot) -> str | None:
+        cur = {name: getattr(snap, attr) for name, attr in _PCIE_ERR}
+        prev = getattr(self, "_err_prev", None)
+        self._err_prev = cur
+        if prev is None:
+            return None
+        for name, _attr in _PCIE_ERR:
+            was, now = prev[name], cur[name]
+            if was is not None and now is not None and now > was:
+                return name
+        return None
+
+    def _place_row(self, cv: Canvas, row: int, width: int, mid: float, gap: bool) -> int | None:
+        """Left edge of a free run on ``row``, nearest the fingers. ``gap`` keeps it off neighbouring text."""
+        best: tuple[float, int] | None = None
+        for x in range(0, cv.w - width + 1):
+            if not self._label_fits(cv, x, row, width, boxes=False):
+                continue
+            if gap and any(0 <= edge < cv.w and (edge, row) in cv.text for edge in (x - 1, x + width)):
+                continue
+            dist = abs(x + width / 2 - mid)
+            if best is None or dist < best[0]:
+                best = (dist, x)
+        return None if best is None else best[1]
+
+    def _label_fits(self, cv: Canvas, x: int, row: int, n: int, boxes: bool) -> bool:
+        if n <= 0 or row < 0 or row >= cv.h or x < 0 or x + n > cv.w:
+            return False
+        for i in range(n):
+            if (x + i, row) in cv.text:
+                return False
+            if boxes and any(_cell_hits(x + i, row, b) for b in self.boxes.values()):
+                return False
+        return True
+
+    @staticmethod
+    def _put_runs(cv: Canvas, x: int, row: int, runs: list[tuple[str, int]]) -> None:
+        for i, (text, col) in enumerate(runs):
+            piece = text if i == len(runs) - 1 else text + " "
+            cv.put_text(x, row, piece, col, None, True)
+            x += len(piece)
+
+
+def _drop_pcie_piece(items: list[tuple[str, tuple[str, int]]], dir_dropped: bool
+                     ) -> tuple[list[tuple[str, tuple[str, int]]], bool]:
+    """Shorten a PCIe caption: error token, then the capacity share, then one direction, then the gen."""
+    def without(tag: str, last: bool = False) -> list[tuple[str, tuple[str, int]]] | None:
+        idxs = [i for i, (t, _) in enumerate(items) if t == tag]
+        if not idxs:
+            return None
+        i = idxs[-1] if last else idxs[0]
+        return items[:i] + items[i + 1:]
+
+    nxt = without("tok")
+    if nxt is not None:
+        return nxt, dir_dropped
+    nxt = without("pct")
+    if nxt is not None:
+        return nxt, dir_dropped
+    if not dir_dropped:
+        nxt = without("dir", last=True)
+        if nxt is not None:
+            return nxt, True
+    nxt = without("link")
+    if nxt is not None:
+        return nxt, dir_dropped
+    nxt = without("dir", last=True)
+    if nxt is not None:
+        return nxt, True
+    return items, dir_dropped
+
+
+def _cell_hits(x: int, row: int, box: tuple[int, int, int, int]) -> bool:
+    bx0, by0, bx1, by1 = box
+    if x < bx0 or x >= bx1:
+        return False
+    return row * 2 < by1 and row * 2 + 2 > by0
 
 
 def _dogleg(a0: float, b0: float, a1: float, b1: float) -> list[tuple[float, float]]:
