@@ -613,3 +613,90 @@ def test_shm_name_and_parsers():
     segs = I.parse_maps_shm(b"7f-80 rw-s 00000000 00:01 5 /memfd:a (deleted)\n7f-80 rw-s 00000000 00:01 5 /memfd:a (deleted)\n")
     assert segs == [(os.makedev(0, 1), 5, "/memfd:a (deleted)")]  # one entry per segment
     assert I.parse_sysvipc("key shmid perms size cpid\n 0 6 1606 4096 104 103 2\n") == {6: (0, 4096, 104)}
+
+
+# ------------------------------------------------------------------------- Internet hosts
+def _wan_stat():
+    from systui.telemetry import IpcNode as N
+
+    nodes = [N("proc:1", "process", "firefox", pids=[1]), N("proc:2", "process", "curl", pids=[2]),
+             N("wan", "wan", "Internet")]
+    links = [IpcLink("proc:1", "wan", "tcp", "10.0.0.2:5000", "140.82.112.3:443", 1, in_bps=900.0, out_bps=10.0),
+             IpcLink("proc:2", "wan", "tcp", "10.0.0.2:5001", "140.82.112.3:443", 2, in_bps=100.0, out_bps=0.0),
+             IpcLink("proc:1", "wan", "udp", "[2a02::5]:5002", "[2a00:1450:4001::e]:443", 1, count=2),
+             IpcLink("proc:2", "wan", "tcp", "10.0.0.2:5003", "100.101.1.2:22", 2)]
+    return IpcStat(nodes, links, {}, dns={"140.82.112.3": "lb-140-82-112-3-iad.github.com",
+                                          "2a00:1450:4001::e": "fra16s48-in-x0e.1e100.net"})
+
+
+def test_split_end_handles_ipv4_ipv6_and_junk():
+    from systui.telemetry import split_end
+
+    assert split_end("1.2.3.4:443") == ("1.2.3.4", 443)
+    assert split_end("[2a00:1450::e]:443") == ("2a00:1450::e", 443)
+    assert split_end("") == ("", None)
+
+
+def test_internet_hosts_group_by_address_across_processes():
+    from systui.tables import internet_hosts
+
+    hosts = internet_hosts(_wan_stat())
+    assert [h.ip for h in hosts] == ["140.82.112.3", "2a00:1450:4001::e", "100.101.1.2"]
+    gh = hosts[0]
+    assert gh.who == ["firefox", "curl"] and gh.count == 2 and gh.ports == {"tcp :443"}
+    assert (gh.in_bps, gh.out_bps) == (1000.0, 10.0) and gh.name.endswith("github.com")
+    assert hosts[1].count == 2 and hosts[1].ports == {"udp :443"} and hosts[1].in_bps is None
+    assert hosts[0].public and not hosts[2].public  # CGNAT / Tailscale
+
+
+def test_internet_panel_rows_cap_and_tag_names_derived():
+    from pixboard.rows import DERIVED
+    from systui.tables import internet_rows, ipc_rows
+
+    rows = ipc_rows(_wan_stat(), "wan")
+    head = next(r for r in rows if r.key == "Remote hosts")
+    assert head.value.startswith("3 addresses") and "1 not public" in head.value
+    assert any("lb-140-82-112-3-iad.github.com" in r.value for r in rows)
+    assert rows[-1].key == "Names" and rows[-1].kind == DERIVED
+    capped = internet_rows(_wan_stat(), _wan_stat().links, limit=1)
+    assert sum(r.key == "" for r in capped) == 2 and "+2 more" in capped[2].value
+
+
+def test_links_table_and_filter_use_the_domain():
+    from systui.tables import domain, ipc_filter, ipc_row
+
+    s = _wan_stat()
+    nodes = {n.id: n for n in s.nodes}
+    assert domain("bom07s31-in-f14.1e100.net") == "1e100.net" and domain("a.b.co.uk") == "b.co.uk"
+    assert ipc_row(s.links[0], nodes, s.dns)[2].plain.startswith("github.com  140.82.112.3:443")
+    assert ipc_row(s.links[3], nodes, s.dns)[2].plain.startswith("Internet  100.101.1.2:22")
+    assert len(ipc_filter(s.links, nodes, None, "1e100", s.dns)) == 1
+
+
+def test_ipc_dict_keeps_names_only_for_kept_links():
+    s = _wan_stat()
+    s.dns["9.9.9.9"] = "dns9.quad9.net"  # no link left to it
+    assert set(ipc_dict(s)["dns"]) == {"140.82.112.3", "2a00:1450:4001::e"}
+
+
+def test_tracker_names_internet_addresses_from_reverse_dns():
+    class Rdns:
+        def name(self, ip):
+            return {"140.82.112.3": "lb.github.com"}.get(ip, "")
+
+    t = I.IpcTracker(SysFS("/nonexistent"), api=lambda path: [], resolve=False)
+    t.rdns = Rdns()
+    s = _wan_stat()
+    nodes = {n.id: n for n in s.nodes}
+    assert t._rollup(nodes, s.links) == {"140.82.112.3": "lb.github.com"}
+    t.rdns = None
+
+
+def test_rdns_cache_starts_over_when_full():
+    r = I._Rdns()
+    r.MAX = 2
+    r._lookup = lambda ip: None
+    r.pool = type("P", (), {"submit": lambda self, f, ip: None, "shutdown": lambda self, **kw: None})()
+    for ip in ("1.1.1.1", "2.2.2.2", "3.3.3.3"):
+        r.name(ip)
+    assert set(r.cache) == {"3.3.3.3"}

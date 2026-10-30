@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import time
+from dataclasses import dataclass, field
 
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -11,7 +14,7 @@ from pixboard.rows import DERIVED, LIVE, Row
 
 from .history import History
 from .render.charts import IN, OUT, human_bytes
-from .telemetry import IpcLink, IpcNode, IpcStat, ProcStat, SystemSnapshot
+from .telemetry import IpcLink, IpcNode, IpcStat, ProcStat, SystemSnapshot, split_end
 from .telemetry.netstat import COUNTERS
 
 SORTS = {
@@ -111,8 +114,9 @@ KIND_FILTERS = (None, ("tcp", "udp"), ("unix",), ("pipe",), ("shm",), ("listen",
 
 
 def ipc_filter(links: list[IpcLink], nodes: dict[str, IpcNode], kinds: tuple[str, ...] | None,
-               text: str = "") -> list[IpcLink]:
-    """Links of the given kinds whose end names, PIDs, paths or ``ip:port`` contain ``text``."""
+               text: str = "", dns: dict[str, str] | None = None) -> list[IpcLink]:
+    """Links of the given kinds whose end names, PIDs, paths, ``ip:port`` or Internet host names
+    contain ``text``."""
     out = [k for k in links if kinds is None or k.kind in kinds]
     text = text.strip().lower()
     if not text:
@@ -120,6 +124,8 @@ def ipc_filter(links: list[IpcLink], nodes: dict[str, IpcNode], kinds: tuple[str
 
     def hay(k: IpcLink) -> str:
         parts = [k.a_end, k.b_end, k.state, str(k.pid_a or ""), str(k.pid_b or "")]
+        if dns and k.b == "wan":
+            parts.append(dns.get(split_end(k.b_end)[0], ""))
         for nid in (k.a, k.b):
             n = nodes.get(nid)
             if n is not None:
@@ -134,10 +140,13 @@ def ipc_sorted(links: list[IpcLink]) -> list[IpcLink]:
     return sorted(links, key=lambda k: (-k.bps, KIND_ORDER.get(k.kind, 9), -k.count))
 
 
-def _end(n: IpcNode | None, nid: str, pid: int | None, end: str) -> Text:
+def _end(n: IpcNode | None, nid: str, pid: int | None, end: str, dns: dict[str, str] | None = None) -> Text:
     if n is not None and n.kind == "peer" and end.lstrip("[").startswith(n.name):
         return Text(end, style="bold")  # an unnamed peer: its address is its name
-    t = Text(n.name if n else nid, style="bold" if n and n.kind != "process" else "")
+    name = n.name if n else nid
+    if n is not None and n.kind == "wan" and dns:
+        name = domain(dns.get(split_end(end)[0], "")) or name  # whose host it is, from reverse DNS
+    t = Text(name, style="bold" if n and n.kind != "process" else "")
     if n is not None and n.kind == "process" and n.pids:
         t.append(f" {n.pids[0]}", style="dim")
     elif pid is not None:
@@ -147,10 +156,18 @@ def _end(n: IpcNode | None, nid: str, pid: int | None, end: str) -> Text:
     return t
 
 
-def ipc_row(k: IpcLink, nodes: dict[str, IpcNode]) -> tuple:
+def domain(name: str) -> str:
+    """The part of a host name that says whose it is: ``bom07s31-in-f14.1e100.net`` → ``1e100.net``,
+    ``ec2-3-8-1-2.eu-west-2.compute.amazonaws.com`` → ``amazonaws.com``, ``a.b.co.uk`` → ``b.co.uk``."""
+    labels = name.rstrip(".").split(".")
+    n = 3 if len(labels) >= 3 and len(labels[-1]) == 2 and len(labels[-2]) <= 3 else 2
+    return ".".join(labels[-n:])
+
+
+def ipc_row(k: IpcLink, nodes: dict[str, IpcNode], dns: dict[str, str] | None = None) -> tuple:
     kind = Text(k.kind + (f" ×{k.count}" if k.count > 1 else ""), style=IPC_KIND_STYLE.get(k.kind, ""))
     a = _end(nodes.get(k.a), k.a, k.pid_a, k.a_end)
-    b = _end(nodes.get(k.b), k.b, k.pid_b, k.b_end) if k.b else Text("listening", style="dim")
+    b = _end(nodes.get(k.b), k.b, k.pid_b, k.b_end, dns) if k.b else Text("listening", style="dim")
     rin = Text("▲" + human_bytes(k.in_bps, True), style=f"#{IN:06x}") if k.in_bps else Text("—", style="dim")
     rout = Text("▼" + human_bytes(k.out_bps, True), style=f"#{OUT:06x}") if k.out_bps else Text("—", style="dim")
     tag = Text("●", style="#3dff7a") if k.prov == "live" else Text("◐", style="#f2c14e")
@@ -270,6 +287,84 @@ def ipc_rows(ipc: IpcStat, nid: str, h: History | None = None, members: set[str]
                      f"{on.name if on else '?'} ({kind}{rate})")
     if peers:
         out.append(Row("Talks to", ", ".join(peers), LIVE))
+    if n.kind == "wan":
+        out += internet_rows(ipc, talk)
+    return out
+
+
+@dataclass
+class RemoteHost:
+    """One Internet address and everything this machine has open to it."""
+
+    ip: str
+    name: str = ""  # reverse DNS
+    ports: set[str] = field(default_factory=set)  # "tcp :443"
+    who: list[str] = field(default_factory=list)  # processes and containers, busiest first
+    count: int = 0
+    in_bps: float | None = None
+    out_bps: float | None = None
+
+    @property
+    def bps(self) -> float:
+        return (self.in_bps or 0.0) + (self.out_bps or 0.0)
+
+    @property
+    def public(self) -> bool:
+        """False for addresses outside the LAN that still aren't the Internet: VPN, CGNAT/Tailscale."""
+        try:
+            return ipaddress.ip_address(self.ip).is_global
+        except ValueError:
+            return True
+
+
+def internet_hosts(ipc: IpcStat, links: list[IpcLink] | None = None) -> list[RemoteHost]:
+    """The links to the Internet node grouped by remote address, busiest first."""
+    hosts: dict[str, RemoteHost] = {}
+    links = ipc.links if links is None else links
+    for k in sorted(links, key=lambda k: -k.bps):
+        if k.b != "wan" or k.kind == "listen":
+            continue
+        ip, port = split_end(k.b_end)
+        h = hosts.get(ip)
+        if h is None:
+            h = hosts[ip] = RemoteHost(ip, ipc.dns.get(ip, ""))
+        if port is not None:
+            h.ports.add(f"{k.kind} :{port}")
+        a = ipc.node(k.a)
+        who = a.name if a else k.a
+        if who not in h.who:
+            h.who.append(who)
+        h.count += k.count
+        if k.in_bps is not None or k.out_bps is not None:
+            # the Internet's ▲ is what it sends towards this host, which is the link's in
+            h.in_bps = (h.in_bps or 0.0) + (k.in_bps or 0.0)
+            h.out_bps = (h.out_bps or 0.0) + (k.out_bps or 0.0)
+    return sorted(hosts.values(), key=lambda h: (-h.bps, -h.count, h.ip))
+
+
+def internet_rows(ipc: IpcStat, links: list[IpcLink], limit: int = 12) -> list[Row]:
+    """A row per Internet address: its name, who talks to it, on which ports, and how fast."""
+    hosts = internet_hosts(ipc, links)
+    if not hosts:
+        return []
+    private = sum(not h.public for h in hosts)
+    note = f" · {private} not public (VPN?)" if private else ""
+    out = [Row("Remote hosts", f"{len(hosts)} address{'es' * (len(hosts) != 1)}{note}", LIVE)]
+    for h in hosts[:limit]:
+        rate = f"  ▲{human_bytes(h.in_bps, True)} ▼{human_bytes(h.out_bps, True)}" if h.bps else ""
+        lines = [f"[bold]{escape(h.ip)}[/]{rate}"]
+        if h.name:
+            name = h.name if len(h.name) <= 34 else "…" + h.name[-33:]  # the owner's domain is at the end
+            lines.append(f"[#8a9aad]{escape(name)}[/]")
+        more = f" +{len(h.who) - 3}" if len(h.who) > 3 else ""
+        what = ", ".join(sorted(h.ports)) + (f" ×{h.count}" if h.count > 1 else "")
+        lines.append(f"[dim]{escape(', '.join(h.who[:3]) + more)} · {escape(what)}"
+                     f"{'' if h.public else ' · not public'}[/]")
+        out.append(Row("", "\n".join(lines), LIVE))
+    if len(hosts) > limit:
+        out.append(Row("", f"[dim]+{len(hosts) - limit} more: filter the table with /[/]", LIVE))
+    if any(h.name for h in hosts):
+        out.append(Row("Names", "reverse DNS of each address", DERIVED))
     return out
 
 

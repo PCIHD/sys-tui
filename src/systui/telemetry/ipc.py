@@ -32,7 +32,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from . import IpcEvent, IpcLink, IpcNode, IpcStat, Rates, SysFS
+from . import IpcEvent, IpcLink, IpcNode, IpcStat, Rates, SysFS, split_end
 from . import netstat, sockdiag
 from .sockdiag import InetSock, UnixSock
 
@@ -317,8 +317,12 @@ class _Rdns:
         self.pool: ThreadPoolExecutor | None = None
         self.cache: dict[str, str | None] = {}
 
+    MAX = 4096  # a browser reaches hundreds of addresses an hour; start over rather than grow forever
+
     def name(self, ip: str) -> str:
         if ip not in self.cache:
+            if len(self.cache) >= self.MAX:
+                self.cache.clear()
             self.cache[ip] = None
             if self.pool is None:
                 self.pool = ThreadPoolExecutor(2, thread_name_prefix="systui-rdns")
@@ -951,11 +955,12 @@ class IpcTracker:
 
         for k in [k for k in self.rates.prev if k not in touched]:
             del self.rates.prev[k]
-        self._rollup(nodes, links)
+        dns = self._rollup(nodes, links)
         counts: dict[str, int] = {}
         for k in links:
             counts[k.kind] = counts.get(k.kind, 0) + k.count
-        return IpcStat(list(nodes.values()), links, counts, "  ·  ".join(w.notes), now - w.t, kernel, states)
+        return IpcStat(list(nodes.values()), links, counts, "  ·  ".join(w.notes), now - w.t, kernel, states,
+                       dns=dns)
 
     def _diff(self, stat: IpcStat, fresh: bool) -> None:
         """Log what appeared and went away since the last poll. Sockets are keyed on their
@@ -1003,16 +1008,25 @@ class IpcTracker:
         n.pids_n = self.fs.read_int(f"{base}/pids.current")
         n.unit = unit_of(path)
 
-    def _rollup(self, nodes: dict[str, IpcNode], links: list[IpcLink]) -> None:
-        """Node rates from their links; reverse-DNS names for peers."""
+    def _rollup(self, nodes: dict[str, IpcNode], links: list[IpcLink]) -> dict[str, str]:
+        """Node rates from their links; reverse-DNS names for peers and for Internet addresses,
+        which are returned as address → name."""
         rollup(nodes, links)
-        if self.rdns is not None:
-            for n in nodes.values():
-                if n.kind == "peer":
-                    n.dns = self.rdns.name(n.addrs[0]) if n.addrs else ""
-                    if n.dns:  # systemd-resolved answers "_gateway" for the default route
-                        n.name = "gateway" if n.dns.startswith("_gateway") else n.dns.split(".")[0]
-                        n.prov = "derived"
+        dns: dict[str, str] = {}
+        if self.rdns is None:
+            return dns
+        for n in nodes.values():
+            if n.kind == "peer":
+                n.dns = self.rdns.name(n.addrs[0]) if n.addrs else ""
+                if n.dns:  # systemd-resolved answers "_gateway" for the default route
+                    n.name = "gateway" if n.dns.startswith("_gateway") else n.dns.split(".")[0]
+                    n.prov = "derived"
+        for k in links:
+            if k.b == "wan":
+                ip = split_end(k.b_end)[0]
+                if ip not in dns and (name := self.rdns.name(ip)):
+                    dns[ip] = name
+        return dns
 
 
 def rollup(nodes: dict[str, IpcNode], links: list[IpcLink]) -> None:

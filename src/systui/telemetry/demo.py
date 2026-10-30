@@ -251,4 +251,7 @@ def demo_ipc(t: float, hostname: str) -> IpcStat:
               "TcpExt.TCPTimeouts": 0.1 * ssh, "Udp.InErrors": 0.0, "Udp.RcvbufErrors": 0.0,
               "conntrack": 812.0, "conntrack_max": 262144.0}
     states = {"ESTAB": 23, "LISTEN": 9, "TIME-WAIT": 41, "CLOSE-WAIT": 1}
-    return IpcStat(nodes, links, counts, "demo data", 0.0, kernel, states, events)
+    # reverse DNS as a resolver would answer; Fastly and the fetch target have no PTR record
+    dns = {"34.54.185.247": "247.185.54.34.bc.googleusercontent.com", "142.250.183.14": "bom07s31-in-f14.1e100.net",
+           "185.199.108.133": "cdn-185-199-108-133.github.com"}
+    return IpcStat(nodes, links, counts, "demo data", 0.0, kernel, states, events, dns)

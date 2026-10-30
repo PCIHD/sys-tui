@@ -436,6 +436,7 @@ class IpcStat:
     kernel: dict[str, float | None] = field(default_factory=dict)  # netstat counters per second, conntrack
     tcp_states: dict[str, int] = field(default_factory=dict)  # this netns's TCP sockets by state
     events: list[IpcEvent] = field(default_factory=list)  # oldest first
+    dns: dict[str, str] = field(default_factory=dict)  # Internet address → reverse-DNS name, derived
 
     def node(self, nid: str) -> IpcNode | None:
         return next((n for n in self.nodes if n.id == nid), None)
@@ -530,7 +531,17 @@ def ipc_dict(ipc: IpcStat, keep: int = 100) -> dict:
     d["nodes"] = [asdict(n) for n in nodes]
     d["links"] = [asdict(k) for k in links]
     d["events"] = [asdict(e) for e in ipc.events[-50:]]
+    kept = {split_end(k.b_end)[0] for k in links if k.b == "wan"}
+    d["dns"] = {ip: name for ip, name in ipc.dns.items() if ip in kept}
     return d
+
+
+def split_end(end: str) -> tuple[str, int | None]:
+    """``"1.2.3.4:443"`` or ``"[2a00::1]:443"`` → (address, port)."""
+    host, sep, port = end.rpartition(":")
+    if not sep or not port.isdigit():
+        return end, None
+    return host.strip("[]"), int(port)
 
 
 # ------------------------------------------------------------------------- source

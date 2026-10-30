@@ -393,7 +393,7 @@ class SysTuiApp(App):
         nodes = {n.id: n for n in ipc.nodes} if ipc else {}
         kinds = tables.KIND_FILTERS[self._ipc_kind]
         text = self.query_one(IpcFilter).value.strip()
-        mine = tables.ipc_filter(mine, nodes, kinds, text)
+        mine = tables.ipc_filter(mine, nodes, kinds, text, ipc.dns if ipc else None)
         status = " · ".join((f"f: {'+'.join(kinds) if kinds else 'all kinds'}",
                              f"/ “{text}”" if text else "/ filter", "Enter → process"))
         if view.panel.status != status:
@@ -410,7 +410,7 @@ class SysTuiApp(App):
                 table.add_column(col, key=col or "tag", width=w)
         table.clear()
         for i, k in enumerate(links):
-            table.add_row(*tables.ipc_row(k, nodes), key=str(i))
+            table.add_row(*tables.ipc_row(k, nodes, ipc.dns if ipc else None), key=str(i))
         self._ipc_links = links
         if links:
             table.move_cursor(row=min(row, len(links) - 1))
