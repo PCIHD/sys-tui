@@ -77,6 +77,7 @@ Below the map, a table lists every channel: kind, both ends with pid and address
 - a container: image, status, IPs, published ports, netns, and CPU, memory and task count against its cgroup limits
 - a VM: its tap, and the same cgroup figures when machined runs it
 - a LAN peer: MAC, reverse-DNS name and whether it is the gateway
+- the Internet: every remote address this machine has open, busiest first, with its reverse-DNS name, the processes and containers talking to it, the ports, and the ▲▼ rate. The links table names each one by its domain (`github.com`, `1e100.net`), and `/` matches those names
 - this machine: TCP states, the kernel's network error rates (retransmits, resets, listen drops, …) and conntrack use
 
 Under it, an **Events** log lists what came and went, newest first, filtered to the selected node:
@@ -124,7 +125,7 @@ Each value in the detail panel carries one of three tags: **● live** (read fro
 | GPU | NVML (`nvidia-ml-py`, optional) and `amdgpu` sysfs for the iGPU; PCIe throughput to and from the card from NVML |
 | IPC | `/proc/<pid>/fd` maps socket and pipe inodes to processes; `fdinfo` flags give pipe direction. `NETLINK_SOCK_DIAG` (what `ss` uses, unprivileged) gives Unix peers and TCP `tcp_info` byte counts. Shared memory comes from memfd and `/dev/shm` fds, from `/proc/<pid>/maps` (a third of the processes per full walk, so segments whose fd was closed after mapping still count), and from `/proc/sysvipc/shm`. Each holder links to one anchor: the SysV creator, or the lowest PID. Container and VM load comes from their cgroup scope (`cpu.stat`, `memory.current`/`max`, `cpu.max`, `pids.current`); network health from `/proc/net/snmp`, `/proc/net/netstat` and `nf_conntrack_count`. |
 | Containers | podman/docker cgroups (`libpod-<id>.scope`), names, IPs and ports from the docker-compatible API socket (only re-read when the set changes), `/proc/<ctr-pid>/net/{dev,tcp}` for each container's own netns |
-| VMs, LAN | VMs from `/run/systemd/machines` and `qemu-system-*` processes, with tap counters via the tun fd's `iff:`. LAN peers from `/proc/net/arp`, the gateway from `/proc/net/route`, reverse DNS on a background thread |
+| VMs, LAN | VMs from `/run/systemd/machines` and `qemu-system-*` processes, with tap counters via the tun fd's `iff:`. LAN peers from `/proc/net/arp`, the gateway from `/proc/net/route`. Reverse DNS for LAN peers and Internet addresses on a background thread |
 
 Slow hwmon chips (an NVMe SMART temperature query can take about 40 ms) are re-read every 5th poll. In between, their last values are shown.
 
@@ -180,6 +181,7 @@ Board profiles live in `src/gputui/boards/`. See the gputui docstring in that pa
 - **IPC: other users' fds need root.** Unprivileged, those processes, and capability-protected ones such as the Wayland compositor, show as one `unreadable` row. `./systui-root` sees them, and it also finds rootless containers through `$SUDO_UID`.
 - **IPC: rootless container mapping is ◐.** Traffic leaves rootless containers through `rootlessport` (published ports) and `pasta`/`slirp4netns` (outbound). Those sockets are charged to a container by matching published ports and remote addresses.
 - **IPC: events are sampled.** A connection that opens and closes between two polls (1 s by default) never shows. A new socket is logged once a full walk has found its process, up to 3 polls late.
+- **IPC: Internet names are reverse DNS (◐).** Each remote address gets a PTR lookup through your resolver, so it leaves the machine. A PTR name says who runs the address (a CDN, a cloud), not which site you opened, and many addresses have none. "Internet" is anything outside the local networks, so VPN and Tailscale/CGNAT addresses land there too; the panel marks them "not public".
 - **IPC: no IPv6 neighbours.** LAN peers come from `/proc/net/arp`, which is IPv4. An IPv6 peer appears only while there is a connection to it.
 
 ## Development
